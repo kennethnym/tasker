@@ -98,7 +98,7 @@ A completed task includes fields such as:
 }
 ```
 
-The exact HTTP error envelope and request-validation responses remain to be specified.
+Create requests require an absolute HTTP or HTTPS URL and an `input` JSON value (including explicit `null`). An explicit deadline must be a positive Go duration. Past schedule times are accepted and immediately eligible. Unknown fields, malformed payloads, and multiple JSON values return `400`. Request bodies are limited to 1 MiB (`413` when exceeded). Errors use plain text; storage failures return `500` without exposing adapter details. Successful creation returns the full task and a `Location` header for retrieval.
 
 ## Task data
 
@@ -250,6 +250,6 @@ Application-specific debounce and atomic coordination between producer writes an
 
 ## Current implementation status
 
-The skeleton includes the constructor, flat config and merge function, task types, storage interface, centralized errors, and two HTTP routes. HTTP handlers return `501`; `Run`, `CreateTask`, and `FindTask` return `ErrNotImplemented`. The executable constructs the service and exits with that error.
+Task creation and retrieval work through the injected storage interface and both HTTP routes. Creation validates input, generates a CUID task ID, applies defaults, and persists queued state. Wakeup notifications are not implemented yet. The constructor requires storage and positive effective dispatch deadline and attempt limits.
 
-Dispatch, storage adapters, config loading, HTTP serving, validation, retries, and cleanup are not implemented. No behaviour described above should be inferred to be operational merely from the presence of its types.
+`Run` remains unimplemented. Dispatch, storage adapters, config loading, application HTTP serving, retries, and cleanup are not implemented. The executable still supplies no storage and therefore fails constructor validation. A caller with an adapter can serve `Handler()` separately.
