@@ -250,6 +250,10 @@ Application-specific debounce and atomic coordination between producer writes an
 
 ## Current implementation status
 
-Task creation and retrieval work through the injected storage interface and both HTTP routes. Creation validates input, generates a CUID task ID, applies defaults, and persists queued state. Wakeup notifications are not implemented yet. The constructor requires storage and positive effective dispatch deadline and attempt limits.
+Task creation and retrieval work through the injected storage interface and both HTTP routes. Creation validates input, generates a CUID task ID, applies defaults, persists queued state, and notifies the dispatcher.
 
-`Run` remains unimplemented. Dispatch, storage adapters, config loading, application HTTP serving, retries, and cleanup are not implemented. The executable still supplies no storage and therefore fails constructor validation. A caller with an adapter can serve `Handler()` separately.
+`Run` dispatches tasks with bounded concurrency and a shared rate limiter (burst one). Execution POSTs JSON with task ID and attempt headers, enforces the persisted task deadline, and renews a 30-second lease every 10 seconds, during delivery. The dispatcher acquires a concurrency slot and rate permission before claiming; the executor has no rate limiter. Empty or failed claims also consume rate permission. This gates claims rather than strictly spacing HTTP starts, which may bunch together if storage is slow. Ownership is checked before execution. Renewal failure cancels local delivery and prevents outcome writes. Shutdown cancels active requests and leaves claims for lease-expiry recovery.
+
+Non-2xx responses (including redirects), transport failures, response read failures, and deadlines cause retry or final failure. Retry delay is jittered between `minBackoff` and an exponentially growing upper bound capped at `maxBackoff`. Successful empty bodies produce a null result. Successful malformed JSON or bodies exceeding 1 MiB also produce a null result with a logged diagnostic; they do not trigger retries. Outcome writes are bounded and must be fenced by storage. Failed writes leave claims for recovery.
+
+Storage adapters, config loading, application HTTP serving, expired exhausted-lease finalization, and retention cleanup remain unimplemented. The executable still supplies no storage and therefore fails constructor validation. No automated tests are present.
