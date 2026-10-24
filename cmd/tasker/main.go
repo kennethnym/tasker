@@ -1,7 +1,13 @@
 package main
 
-import "tasker/internal/app"
+import (
+	"log"
+
+	"tasker/internal/app"
+)
 
 func main() {
-	app.Run()
+	if err := app.Run(); err != nil {
+		log.Fatal(err)
+	}
 }
