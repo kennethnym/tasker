@@ -6,12 +6,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/url"
 	"time"
 )
 
 type Tasker struct {
-	config Config
+	config     Config
+	dispatcher *dispatcher
 }
 
 func New(config Config) (*Tasker, error) {
@@ -25,11 +27,16 @@ func New(config Config) (*Tasker, error) {
 		return nil, fmt.Errorf("tasker: dispatch deadline and max attempts must be positive")
 	}
 
-	return &Tasker{config: config}, nil
+	if config.MaxConcurrentDispatches <= 0 || config.MaxDispatchesPerSecond <= 0 ||
+		math.IsNaN(config.MaxDispatchesPerSecond) || math.IsInf(config.MaxDispatchesPerSecond, 0) {
+		return nil, fmt.Errorf("tasker: dispatch rate and concurrency must be positive and finite")
+	}
+
+	return &Tasker{config: config, dispatcher: newDispatcher(config)}, nil
 }
 
 func (t *Tasker) Run(ctx context.Context) error {
-	return ErrNotImplemented
+	return t.dispatcher.run(ctx)
 }
 
 func (t *Tasker) CreateTask(ctx context.Context, config CreateTaskConfig) (Task, error) {
@@ -72,6 +79,8 @@ func (t *Tasker) CreateTask(ctx context.Context, config CreateTaskConfig) (Task,
 	if err := t.config.Storage.Create(ctx, task); err != nil {
 		return Task{}, err
 	}
+
+	t.dispatcher.notify()
 
 	return task, nil
 }
