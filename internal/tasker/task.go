@@ -3,7 +3,13 @@ package tasker
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/lucsky/cuid"
 )
+
+func NewTaskID() string {
+	return cuid.New()
+}
 
 type Status string
 
