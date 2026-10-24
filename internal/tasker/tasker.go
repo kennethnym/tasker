@@ -33,6 +33,10 @@ func New(config Config) (*Tasker, error) {
 		return nil, fmt.Errorf("tasker: dispatch rate and concurrency must be positive and finite")
 	}
 
+	if config.MinBackoff <= 0 || config.MaxBackoff < config.MinBackoff {
+		return nil, fmt.Errorf("tasker: backoff bounds must be positive and max must be at least min")
+	}
+
 	if config.TaskRetention <= 0 {
 		return nil, fmt.Errorf("tasker: task retention must be positive")
 	}
