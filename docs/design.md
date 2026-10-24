@@ -31,7 +31,7 @@ service, err := tasker.New(tasker.Config{
 })
 ```
 
-`New` constructs the service without starting background work. `Run(ctx)` will manage dispatchers and cleanup. The caller serves `Handler()` separately and owns the storage connection lifecycle.
+`New` constructs the service without starting background work. `Run(ctx)` manages dispatch and cleanup, cancels cleanup when dispatch exits, and waits for both to stop. The caller serves `Handler()` separately and owns the storage connection lifecycle.
 
 `CreateTask(ctx, CreateTaskConfig)` and `FindTask(ctx, id)` provide the service operations. HTTP handlers delegate to them. Context cancellation will stop background work; the precise shutdown grace period and handling of active requests remain implementation decisions.
 
@@ -234,7 +234,7 @@ There are no named queues in the initial service. Polling, lease renewal, and cl
 
 `taskRetention` is measured from success or final failure, using `finishedAt`. It applies to completed task history, not the age of queued or running tasks.
 
-A periodic cleanup goroutine deletes terminal tasks where `finishedAt` precedes `now - taskRetention`. It uses bounded batches through `DeleteFinishedBefore(ctx, cutoff, limit)` and an index supporting that query. A one-minute cleanup interval is a proposed internal default.
+A periodic cleanup goroutine deletes terminal tasks where `finishedAt` precedes `now - taskRetention`. It uses bounded batches through `DeleteFinishedBefore(ctx, cutoff, limit)` and an index supporting that query. Cleanup runs immediately on startup and every minute thereafter, draining batches of at most 1,000 tasks with a fixed cutoff per sweep. Cancellation is checked between batches.
 
 The task, input, result, and last error are deleted together. Cleanup failures are retried on a later sweep. Retention makes a task eligible for deletion; it is not an exact deletion deadline. Retrieval returns `404` after deletion.
 
@@ -250,6 +250,6 @@ Application-specific debounce and atomic coordination between producer writes an
 
 ## Current implementation status
 
-Task creation and retrieval work through the injected storage interface and both HTTP routes. Creation validates input, generates a CUID task ID, applies defaults, and persists queued state. Wakeup notifications are not implemented yet. The constructor requires storage and positive effective dispatch deadline and attempt limits.
+Task creation and retrieval work through the injected storage interface and both HTTP routes. Creation validates input, generates a CUID task ID, applies defaults, and persists queued state. Creation sends a coalesced dispatcher wakeup after persistence. The constructor validates storage, dispatch limits, and positive task retention.
 
-`Run` remains unimplemented. Dispatch, storage adapters, config loading, application HTTP serving, retries, and cleanup are not implemented. The executable still supplies no storage and therefore fails constructor validation. A caller with an adapter can serve `Handler()` separately.
+`Run` coordinates the dispatcher and cleanup reconciler. Cleanup retries storage failures on the next sweep. Dispatch coordination exists, but execution is not wired, so `Run` still returns `ErrNotImplemented` and stops cleanup. HTTP execution, storage adapters, config loading, application HTTP serving, and retries are not implemented. The executable still supplies no storage and therefore fails constructor validation. A caller with an adapter can serve `Handler()` separately.
