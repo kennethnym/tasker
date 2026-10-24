@@ -1,63 +1,37 @@
-package postgres
+package sqlite
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
+	"path/filepath"
 	"reflect"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"database/sql"
 	"tasker/internal/tasker"
 )
 
 func testStorage(t *testing.T) (*Storage, context.Context) {
 	t.Helper()
-	url := os.Getenv("TASKER_TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("set TASKER_TEST_DATABASE_URL to run Postgres integration tests")
-	}
-	ctx := t.Context()
-	admin, err := pgxpool.New(ctx, url)
+	s := openStorage(t, filepath.Join(t.TempDir(), "tasks.db"))
+	return s, t.Context()
+}
+func openStorage(t *testing.T, path string) *Storage {
+	t.Helper()
+	s, err := Open(t.Context(), path)
 	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(admin.Close)
-	name := "test_" + tasker.NewTaskID()
-	quoted := pgx.Identifier{name}.Sanitize()
-	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+quoted); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if _, err := admin.Exec(ctx, "DROP SCHEMA "+quoted+" CASCADE"); err != nil {
+		if err := s.Close(); err != nil {
 			t.Error(err)
 		}
 	})
-	cfg, err := pgxpool.ParseConfig(url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.ConnConfig.RuntimeParams["search_path"] = name
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	s := New(pool)
-	if err := s.Migrate(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Migrate(ctx); err != nil {
-		t.Fatalf("repeat migration: %v", err)
-	}
-	return s, ctx
+	return s
 }
 
 func createTask(t *testing.T, s *Storage, ctx context.Context, id string, max int) tasker.Task {
@@ -94,7 +68,7 @@ func get(t *testing.T, s *Storage, ctx context.Context, id string) tasker.Task {
 }
 func expire(t *testing.T, s *Storage, ctx context.Context, id string) {
 	t.Helper()
-	if _, err := s.pool.Exec(ctx, `UPDATE tasker_tasks SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, id); err != nil {
+	if _, err := s.db.ExecContext(ctx, `UPDATE tasker_tasks SET lease_expires_at=?1 WHERE id=?2`, time.Now().Add(-time.Second).UnixMicro(), id); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -103,13 +77,6 @@ func TestLifecycle(t *testing.T) {
 	s, ctx := testStorage(t)
 	original := createTask(t, s, ctx, "task", 3)
 	fetched := get(t, s, ctx, original.ID)
-	// Compare timestamps as instants; pgx may decode in the local timezone.
-	if !original.ScheduleTime.Equal(fetched.ScheduleTime) || !original.CreatedAt.Equal(fetched.CreatedAt) || !original.UpdatedAt.Equal(fetched.UpdatedAt) {
-		t.Fatal("timestamps changed during round trip")
-	}
-	original.ScheduleTime = fetched.ScheduleTime
-	original.CreatedAt = fetched.CreatedAt
-	original.UpdatedAt = fetched.UpdatedAt
 	if !reflect.DeepEqual(original, fetched) {
 		t.Fatalf("round trip: %+v != %+v", original, fetched)
 	}
@@ -143,7 +110,7 @@ func TestLifecycle(t *testing.T) {
 	if _, err := s.ClaimDue(ctx, time.Minute); !errors.Is(err, tasker.ErrNoTaskDue) {
 		t.Fatalf("future claim: %v", err)
 	}
-	if _, err := s.pool.Exec(ctx, `UPDATE tasker_tasks SET schedule_time=clock_timestamp()-interval '1 second' WHERE id=$1`, first.ID); err != nil {
+	if _, err := s.db.ExecContext(ctx, `UPDATE tasker_tasks SET schedule_time=?1 WHERE id=?2`, time.Now().Add(-time.Second).UnixMicro(), first.ID); err != nil {
 		t.Fatal(err)
 	}
 	second := claim(t, s, ctx)
@@ -236,28 +203,20 @@ func TestOutcomesAndCleanup(t *testing.T) {
 	}
 }
 
-func TestConcurrentClaimsAndSkipLocked(t *testing.T) {
-	s, ctx := testStorage(t)
-	createTask(t, s, ctx, "locked", 2)
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `SELECT id FROM tasker_tasks WHERE id='locked' FOR UPDATE`); err != nil {
-		t.Fatal(err)
-	}
+func TestConcurrentClaims(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tasks.db")
+	stores := []*Storage{openStorage(t, path), openStorage(t, path)}
+	ctx := t.Context()
 	const count = 24
 	for i := 0; i < count; i++ {
-		createTask(t, s, ctx, fmt.Sprintf("task-%02d", i), 2)
+		createTask(t, stores[0], ctx, fmt.Sprintf("task-%02d", i), 2)
 	}
 	var wg sync.WaitGroup
 	ids := make(chan string, count)
 	for i := 0; i < count; i++ {
+		s := stores[i%len(stores)]
 		wg.Go(func() {
-			claimCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			defer cancel()
-			task, err := s.ClaimDue(claimCtx, time.Minute)
+			task, err := s.ClaimDue(ctx, time.Minute)
 			if err != nil {
 				t.Error(err)
 				return
@@ -272,19 +231,13 @@ func TestConcurrentClaimsAndSkipLocked(t *testing.T) {
 	close(ids)
 	seen := map[string]bool{}
 	for id := range ids {
-		if seen[id] || id == "locked" {
-			t.Errorf("duplicate or locked claim: %s", id)
+		if seen[id] {
+			t.Errorf("duplicate claim: %s", id)
 		}
 		seen[id] = true
 	}
 	if len(seen) != count {
 		t.Fatalf("claimed %d tasks, want %d", len(seen), count)
-	}
-	if err := tx.Rollback(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if task := claim(t, s, ctx); task.ID != "locked" {
-		t.Fatalf("unlocked claim: %s", task.ID)
 	}
 }
 
@@ -343,25 +296,24 @@ func TestJSONValuesAndFailedWrites(t *testing.T) {
 	}
 }
 
-func TestOwnershipExpiryWhileWaitingForLock(t *testing.T) {
+func TestOwnershipExpiryWhileWaitingForWriter(t *testing.T) {
 	for _, operation := range []string{"renew", "complete", "retry", "fail"} {
 		t.Run(operation, func(t *testing.T) {
-			s, baseCtx := testStorage(t)
-			ctx, cancel := context.WithTimeout(baseCtx, 10*time.Second)
+			path := filepath.Join(t.TempDir(), "tasks.db")
+			s := openStorage(t, path)
+			blocker := openStorage(t, path)
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
 			createTask(t, s, ctx, "task", 2)
-			task, err := s.ClaimDue(ctx, time.Second)
+			task, err := s.ClaimDue(ctx, 250*time.Millisecond)
 			if err != nil {
 				t.Fatal(err)
 			}
-			blocker, err := s.pool.Begin(ctx)
+			tx, err := blocker.db.BeginTx(ctx, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer blocker.Rollback(context.Background())
-			if _, err := blocker.Exec(ctx, `SELECT id FROM tasker_tasks WHERE id=$1 FOR UPDATE`, task.ID); err != nil {
-				t.Fatal(err)
-			}
+			defer tx.Rollback()
 			result := make(chan error, 1)
 			go func() {
 				switch operation {
@@ -375,47 +327,26 @@ func TestOwnershipExpiryWhileWaitingForLock(t *testing.T) {
 					result <- s.Fail(ctx, lease(task), "failed")
 				}
 			}()
-			// Observe the actual lock wait before expiry, so the test cannot pass just
-			// because the ownership operation started after the lease had expired.
-			for {
-				var waiting, expired bool
-				err := s.pool.QueryRow(ctx, `SELECT EXISTS (
- SELECT 1 FROM pg_stat_activity WHERE $1::integer = ANY(pg_blocking_pids(pid))
- ), clock_timestamp() >= $2::timestamptz`, int32(blocker.Conn().PgConn().PID()), task.LeaseExpiresAt).Scan(&waiting, &expired)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if expired {
-					t.Fatal("lease expired before observing the lock wait")
-				}
-				if waiting {
-					break
+			// Confirm the operation has taken the sole connection while the independent
+			// handle holds the writer lock, before waiting out the lease.
+			for s.db.Stats().InUse == 0 {
+				if !time.Now().Before(*task.LeaseExpiresAt) {
+					t.Fatal("operation did not start before lease expiry")
 				}
 				select {
 				case err := <-result:
-					t.Fatalf("operation did not wait for lock: %v", err)
+					t.Fatalf("operation did not wait: %v", err)
 				case <-ctx.Done():
 					t.Fatal(ctx.Err())
-				case <-time.After(5 * time.Millisecond):
+				case <-time.After(time.Millisecond):
 				}
 			}
-			// Wait on database time without modifying the locked row. Updating that row
-			// would trigger PostgreSQL's predicate recheck and hide the original bug.
-			for {
-				var expired bool
-				if err := s.pool.QueryRow(ctx, `SELECT clock_timestamp() >= $1::timestamptz`, task.LeaseExpiresAt).Scan(&expired); err != nil {
-					t.Fatal(err)
-				}
-				if expired {
-					break
-				}
-				select {
-				case <-ctx.Done():
-					t.Fatal(ctx.Err())
-				case <-time.After(5 * time.Millisecond):
-				}
+			select {
+			case err := <-result:
+				t.Fatalf("operation bypassed writer lock: %v", err)
+			case <-time.After(time.Until(*task.LeaseExpiresAt) + 10*time.Millisecond):
 			}
-			if err := blocker.Commit(ctx); err != nil {
+			if err := tx.Commit(); err != nil {
 				t.Fatal(err)
 			}
 			select {
@@ -428,6 +359,67 @@ func TestOwnershipExpiryWhileWaitingForLock(t *testing.T) {
 			}
 			if got := get(t, s, ctx, task.ID); !reflect.DeepEqual(got, task) {
 				t.Fatalf("rejected operation changed task: %+v", got)
+			}
+		})
+	}
+}
+
+func TestReopenAndMigrations(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tasks ?# owned.db")
+	s, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := createTask(t, s, t.Context(), "persisted", 2)
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened := openStorage(t, path)
+	if got := get(t, reopened, t.Context(), original.ID); !reflect.DeepEqual(got, original) {
+		t.Fatalf("reopen changed task: %+v", got)
+	}
+	var mode string
+	var version, appID, synchronous, timeout int
+	for query, dest := range map[string]any{
+		"PRAGMA journal_mode": &mode, "PRAGMA user_version": &version,
+		"PRAGMA application_id": &appID, "PRAGMA synchronous": &synchronous,
+		"PRAGMA busy_timeout": &timeout,
+	} {
+		if err := reopened.db.QueryRow(query).Scan(dest); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if mode != "wal" || version != 1 || appID != applicationID || synchronous != 2 || timeout != 5000 {
+		t.Fatalf("settings: %s %d %d %d %d", mode, version, appID, synchronous, timeout)
+	}
+}
+
+func TestRejectUnownedAndNewerDatabases(t *testing.T) {
+	for name, setup := range map[string]string{
+		"unowned": `CREATE TABLE users (id INTEGER PRIMARY KEY)`,
+		"newer":   `PRAGMA application_id=1413567307; PRAGMA user_version=2`,
+		"other":   `PRAGMA application_id=1234`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "tasks.db")
+			db, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			if _, err := db.Exec(setup); err != nil {
+				t.Fatal(err)
+			}
+			if s, err := Open(t.Context(), path); err == nil {
+				s.Close()
+				t.Fatal("accepted incompatible database")
+			}
+			var count int
+			if err := db.QueryRow(`SELECT count(*) FROM sqlite_schema WHERE name='tasker_tasks'`).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if count != 0 {
+				t.Fatal("failed migration created tables")
 			}
 		})
 	}
