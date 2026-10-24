@@ -219,12 +219,6 @@ Every write starts with `BEGIN IMMEDIATE`. The adapter reads the host clock only
 
 Each claim finalizes up to 100 exhausted expired tasks and claims one eligible task in the same transaction. Recovery still commits when no task is due. Repeated polls drain recovery backlogs. `Retry` on the final attempt records failure immediately. Cleanup requires a positive batch limit.
 
-Tests use temporary database files and run without a database server or environment variables:
-
-```sh
-nix develop -c go test -race ./...
-```
-
 Errors are declared in `error.go`. `TaskNotFoundError` includes the requested ID and unwraps to `ErrTaskNotFound`, allowing both `errors.Is` and `errors.AsType`. Other sentinels cover no due task, lost lease, and unimplemented operations.
 
 ## Configuration and deployment
