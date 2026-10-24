@@ -31,7 +31,7 @@ service, err := tasker.New(tasker.Config{
 })
 ```
 
-`New` constructs the service without starting background work. `Run(ctx)` will manage dispatchers and cleanup. The caller serves `Handler()` separately and owns the storage connection lifecycle.
+`New` constructs the service without starting background work. `Run(ctx)` manages dispatch and cleanup, cancels cleanup when dispatch exits, and waits for both to stop. The caller serves `Handler()` separately and owns the storage connection lifecycle.
 
 `CreateTask(ctx, CreateTaskConfig)` and `FindTask(ctx, id)` provide the service operations. HTTP handlers delegate to them. Context cancellation will stop background work; the precise shutdown grace period and handling of active requests remain implementation decisions.
 
@@ -249,7 +249,7 @@ There are no named queues in the initial service. Polling, lease renewal, and cl
 
 `taskRetention` is measured from success or final failure, using `finishedAt`. It applies to completed task history, not the age of queued or running tasks.
 
-A periodic cleanup goroutine deletes terminal tasks where `finishedAt` precedes `now - taskRetention`. It uses bounded batches through `DeleteFinishedBefore(ctx, cutoff, limit)` and an index supporting that query. A one-minute cleanup interval is a proposed internal default.
+A periodic cleanup goroutine deletes terminal tasks where `finishedAt` precedes `now - taskRetention`. It uses bounded batches through `DeleteFinishedBefore(ctx, cutoff, limit)` and an index supporting that query. Cleanup runs immediately on startup and every minute thereafter, draining batches of at most 1,000 tasks with a fixed cutoff per sweep. Cancellation is checked between batches.
 
 The task, input, result, and last error are deleted together. Cleanup failures are retried on a later sweep. Retention makes a task eligible for deletion; it is not an exact deletion deadline. Retrieval returns `404` after deletion.
 
@@ -265,6 +265,12 @@ Application-specific debounce and atomic coordination between producer writes an
 
 ## Current implementation status
 
-Task creation and retrieval work through the injected storage interface and both HTTP routes. Creation validates input, generates a CUID task ID, applies defaults, and persists queued state. Wakeup notifications are not implemented yet. The constructor requires storage and positive effective dispatch deadline and attempt limits.
+Task creation and retrieval work through the injected storage interface and both HTTP routes. Creation validates input, generates a CUID task ID, applies defaults, persists queued state, and notifies the dispatcher.
 
-`Run` remains unimplemented. The SQLite storage adapter is implemented. HTTP execution, config loading, application HTTP serving, retry scheduling, and periodic cleanup are not implemented. The executable still supplies no storage and therefore fails constructor validation. A caller with an adapter can serve `Handler()` separately.
+`Run` dispatches tasks with bounded concurrency and a shared rate limiter (burst one). Execution POSTs JSON with task ID and attempt headers, enforces the persisted task deadline, and renews a 30-second lease every 10 seconds during delivery. The dispatcher acquires a concurrency slot and rate permission before claiming; the executor has no rate limiter. Empty or failed claims also consume rate permission. This gates claims rather than strictly spacing HTTP starts, which may bunch together if storage is slow. Ownership is checked before execution. Renewal failure cancels local delivery and prevents outcome writes. Shutdown cancels active requests and leaves claims for lease-expiry recovery.
+
+Non-2xx responses (including redirects), transport failures, response read failures, and deadlines cause retry or final failure. Retry delay is jittered between `minBackoff` and an exponentially growing upper bound capped at `maxBackoff`. Successful empty bodies produce a null result. Successful malformed JSON or bodies exceeding 1 MiB also produce a null result with a logged diagnostic; they do not trigger retries. Outcome writes are bounded and must be fenced by storage. Failed writes leave claims for recovery.
+
+`Run` also coordinates the cleanup reconciler, which deletes terminal tasks in bounded batches and retries storage failures on the next sweep. The constructor validates positive retention and valid backoff bounds.
+
+The SQLite storage adapter implements persistence, lease fencing, and expired exhausted-lease finalization. Config loading and application HTTP serving remain unimplemented. The executable still supplies no storage and therefore fails constructor validation. No automated tests are present.
