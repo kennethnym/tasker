@@ -17,6 +17,10 @@ type Storage interface {
 	Retry(ctx context.Context, lease Lease, scheduleTime time.Time, lastError string) error
 	Fail(ctx context.Context, lease Lease, lastError string) error
 
+	// DeleteFinishedBefore deletes at most limit succeeded or failed tasks whose
+	// finishedAt is strictly before cutoff, including their input, result, and
+	// last error. It returns the number deleted. Queued and running tasks must
+	// never be deleted. Implementations must honor context cancellation.
 	DeleteFinishedBefore(ctx context.Context, cutoff time.Time, limit int) (int, error)
 }
 

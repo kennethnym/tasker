@@ -14,6 +14,7 @@ import (
 type Tasker struct {
 	config     Config
 	dispatcher *dispatcher
+	cleanup    *cleanupReconciler
 }
 
 func New(config Config) (*Tasker, error) {
@@ -32,11 +33,29 @@ func New(config Config) (*Tasker, error) {
 		return nil, fmt.Errorf("tasker: dispatch rate and concurrency must be positive and finite")
 	}
 
-	return &Tasker{config: config, dispatcher: newDispatcher(config)}, nil
+	if config.TaskRetention <= 0 {
+		return nil, fmt.Errorf("tasker: task retention must be positive")
+	}
+
+	return &Tasker{
+		config:     config,
+		dispatcher: newDispatcher(config),
+		cleanup:    &cleanupReconciler{storage: config.Storage, retention: config.TaskRetention},
+	}, nil
 }
 
 func (t *Tasker) Run(ctx context.Context) error {
-	return t.dispatcher.run(ctx)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		t.cleanup.run(ctx)
+	}()
+	err := t.dispatcher.run(ctx)
+	cancel()
+	<-done
+	return err
 }
 
 func (t *Tasker) CreateTask(ctx context.Context, config CreateTaskConfig) (Task, error) {
