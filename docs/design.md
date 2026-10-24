@@ -2,7 +2,7 @@
 
 Tasker is a standalone Go service for durable, scheduled HTTP task delivery. Producers submit a target URL and arbitrary JSON input. Tasker claims due tasks, POSTs their input to executors, and records success or schedules retries.
 
-The initial deployment is one process with pluggable durable storage. Postgres is the first planned adapter. This document describes the intended service; the current code is a skeleton.
+The initial deployment is one process with pluggable durable storage. SQLite is the first implemented adapter, using a dedicated Tasker-owned file. This document describes the intended service; the current code is a skeleton.
 
 ## Scope and guarantees
 
@@ -114,7 +114,7 @@ The statuses are `queued`, `running`, `succeeded`, and `failed`. New tasks have 
 
 Success and final failure are terminal. They set `finishedAt`, update `updatedAt`, and clear the active lease. A retry returns the task to `queued`, updates `scheduleTime`, records the error, and clears the lease.
 
-The proposed meaning of `startedAt` is the first claim time, preserved across retries. This should be settled before implementing storage updates.
+`startedAt` is the first claim time, preserved across retries and expired-lease recovery.
 
 ## Dispatch and wakeups
 
@@ -142,7 +142,7 @@ These limits do not bound executor work that continues after a timeout. Multiple
 
 A task is eligible if it is queued and due, or running with an expired lease, and has attempts remaining. Expired tasks that have exhausted their attempts must be finalized as failed rather than left running indefinitely.
 
-The adapter's `ClaimDue(ctx, leaseDuration)` claims one task atomically. The planned Postgres implementation selects an eligible row ordered by `scheduleTime, id` using `FOR UPDATE SKIP LOCKED`, updates it in the same transaction, and returns the committed claim.
+The adapter's `ClaimDue(ctx, leaseDuration)` claims one task atomically. The SQLite implementation obtains the writer lock with `BEGIN IMMEDIATE`, selects and updates an eligible row ordered by `scheduleTime, id`, and returns the claim only after commit.
 
 Each claim assigns a fresh UUID `leaseToken`, sets `leaseExpiresAt`, marks the task running, and increments `attempt`. Dispatch begins only after the claim commits.
 
@@ -200,9 +200,24 @@ Adapters must provide atomic operations, not only CRUD:
 - `Complete`, `Retry`, and `Fail` for conditional state transitions.
 - `DeleteFinishedBefore` for bounded terminal-task cleanup.
 
-The caller supplies the adapter through `Config.Storage`. Postgres connection setup belongs in the application layer. No adapter is implemented yet.
+The caller supplies the adapter through `Config.Storage`. `internal/storage/sqlite` owns a dedicated database file and its connection lifecycle:
 
-Postgres will need indexes supporting due queued tasks, expired running leases, and terminal tasks ordered by `finishedAt`. Exact schema, migrations, timestamp authority, and transaction queries remain implementation work.
+```go
+adapter, err := sqlite.Open(ctx, "/var/lib/tasker/tasks.db")
+if err != nil {
+    return err
+}
+defer adapter.Close()
+service, err := tasker.New(tasker.Config{Storage: adapter})
+```
+
+The parent directory must exist. `Open` accepts a filename, creates the database if necessary, and applies migrations before returning. Tasker manages its own schema rather than participating in another application's migration system. It rejects nonempty unowned databases and unsupported schema versions. The initial migration installs `tasker_tasks` and partial indexes for queued, expired, and finished tasks. SQLite's `application_id` identifies the file and `user_version` records the migration version; schema changes and version updates commit together.
+
+The adapter uses the pure-Go `modernc.org/sqlite` driver, WAL mode, full synchronous writes, and a five-second busy timeout. Each adapter serializes its local operations on one connection. Independent handles to the same local file serialize writes through SQLite's writer lock. This is intended for a single-host service with short database transactions; HTTP execution happens outside those transactions. Store the file on persistent local storage, not a shared network filesystem. Use SQLite-aware backups or close all connections before copying it; a live WAL file can contain committed tasks.
+
+Every write starts with `BEGIN IMMEDIATE`. The adapter reads the host clock only after obtaining the writer lock, so an ownership update blocked until lease expiry is rejected. Timestamps are persisted as UTC Unix microseconds. Creation timestamps and requested schedules come from the caller. Lease durations must be at least one microsecond. Ownership updates require an unexpired lease, running status, and matching token. JSON is stored as validated text, preserving the original representation.
+
+Each claim finalizes up to 100 exhausted expired tasks and claims one eligible task in the same transaction. Recovery still commits when no task is due. Repeated polls drain recovery backlogs. `Retry` on the final attempt records failure immediately. Cleanup requires a positive batch limit.
 
 Errors are declared in `error.go`. `TaskNotFoundError` includes the requested ID and unwraps to `ErrTaskNotFound`, allowing both `errors.Is` and `errors.AsType`. Other sentinels cover no due task, lost lease, and unimplemented operations.
 
@@ -222,7 +237,7 @@ TaskRetention:          7 * 24 * time.Hour
 
 `New(config)` applies `DefaultConfig.Merge(config)`. Merge returns a copy, using non-zero fields and a non-nil storage adapter from the supplied config. Neither input is mutated. Explicit zero overrides cannot be represented by this API; zero currently means use the inherited value.
 
-The planned binary accepts `tasker --config /path/config.yaml`, with environment overrides prefixed by `TASKER_`. Precedence is environment, then file, then defaults. Secrets such as the Postgres connection string are injected through the environment, using `DATABASE_URL` for the initial adapter.
+The planned binary accepts `tasker --config /path/config.yaml`, with environment overrides prefixed by `TASKER_`. Precedence is environment, then file, then defaults. The SQLite file path belongs in application configuration; no external database credentials are needed.
 
 Configuration loading and duration parsing belong outside the service. The Go config struct has no YAML tags. Loading must explicitly map the flat external names to its fields.
 
@@ -244,7 +259,7 @@ Cleanup is owned by the service, with no database TTL extension required.
 
 Deferred features are authentication in both directions, live stage/progress reporting, executor cancellation, task rescheduling endpoints, enqueue deduplication, named queues, distributed rate limits, and per-task retention overrides.
 
-Before implementing dispatch, settle request and response size limits, malformed success-body diagnostics, redirect handling, URL validation, exact backoff jitter and burst capacity, and rate-gate coordination with claims. Before implementing lifecycle and storage, settle shutdown behaviour, clock authority, and first-start timestamp semantics.
+Before implementing dispatch, settle request and response size limits, malformed success-body diagnostics, redirect handling, URL validation, exact backoff jitter and burst capacity, and rate-gate coordination with claims. Before implementing lifecycle, settle shutdown behaviour.
 
 Application-specific debounce and atomic coordination between producer writes and enqueueing remain outside Tasker. Producers needing transactional enqueue intent can implement an outbox and a relay; enqueue deduplication would need a separate design.
 
@@ -258,4 +273,4 @@ Non-2xx responses (including redirects), transport failures, response read failu
 
 `Run` also coordinates the cleanup reconciler, which deletes terminal tasks in bounded batches and retries storage failures on the next sweep. The constructor validates positive retention and valid backoff bounds.
 
-Storage adapters, config loading, application HTTP serving, and expired exhausted-lease finalization remain unimplemented. The executable still supplies no storage and therefore fails constructor validation. No automated tests are present.
+The SQLite storage adapter implements persistence, lease fencing, and expired exhausted-lease finalization. Config loading and application HTTP serving remain unimplemented. The executable still supplies no storage and therefore fails constructor validation. No automated tests are present.
