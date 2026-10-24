@@ -1,0 +1,29 @@
+CREATE TABLE IF NOT EXISTS tasker_tasks (
+    id text PRIMARY KEY,
+    kind text NOT NULL,
+    url text NOT NULL,
+    input json NOT NULL,
+    status text NOT NULL CHECK (status IN ('queued', 'running', 'succeeded', 'failed')),
+    schedule_time timestamptz NOT NULL,
+    dispatch_deadline text NOT NULL,
+    attempt integer NOT NULL CHECK (attempt >= 0),
+    max_attempts integer NOT NULL CHECK (max_attempts > 0),
+    result json,
+    last_error text NOT NULL,
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL,
+    started_at timestamptz,
+    finished_at timestamptz,
+    lease_token text NOT NULL DEFAULT '',
+    lease_expires_at timestamptz,
+    CHECK ((status = 'running' AND lease_token <> '' AND lease_expires_at IS NOT NULL)
+        OR (status <> 'running' AND lease_token = '' AND lease_expires_at IS NULL)),
+    CHECK ((status IN ('succeeded', 'failed')) = (finished_at IS NOT NULL))
+);
+
+CREATE INDEX IF NOT EXISTS tasker_tasks_due ON tasker_tasks (schedule_time, id)
+    WHERE status = 'queued';
+CREATE INDEX IF NOT EXISTS tasker_tasks_expired ON tasker_tasks (lease_expires_at, id)
+    WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS tasker_tasks_finished ON tasker_tasks (finished_at, id)
+    WHERE status IN ('succeeded', 'failed');

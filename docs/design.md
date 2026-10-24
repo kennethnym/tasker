@@ -2,7 +2,7 @@
 
 Tasker is a standalone Go service for durable, scheduled HTTP task delivery. Producers submit a target URL and arbitrary JSON input. Tasker claims due tasks, POSTs their input to executors, and records success or schedules retries.
 
-The initial deployment is one process with pluggable durable storage. Postgres is the first planned adapter. This document describes the intended service; the current code is a skeleton.
+The initial deployment is one process with pluggable durable storage. Postgres is the first implemented adapter. This document describes the intended service; the current code is a skeleton.
 
 ## Scope and guarantees
 
@@ -114,7 +114,7 @@ The statuses are `queued`, `running`, `succeeded`, and `failed`. New tasks have 
 
 Success and final failure are terminal. They set `finishedAt`, update `updatedAt`, and clear the active lease. A retry returns the task to `queued`, updates `scheduleTime`, records the error, and clears the lease.
 
-The proposed meaning of `startedAt` is the first claim time, preserved across retries. This should be settled before implementing storage updates.
+`startedAt` is the first claim time, preserved across retries and expired-lease recovery.
 
 ## Dispatch and wakeups
 
@@ -142,7 +142,7 @@ These limits do not bound executor work that continues after a timeout. Multiple
 
 A task is eligible if it is queued and due, or running with an expired lease, and has attempts remaining. Expired tasks that have exhausted their attempts must be finalized as failed rather than left running indefinitely.
 
-The adapter's `ClaimDue(ctx, leaseDuration)` claims one task atomically. The planned Postgres implementation selects an eligible row ordered by `scheduleTime, id` using `FOR UPDATE SKIP LOCKED`, updates it in the same transaction, and returns the committed claim.
+The adapter's `ClaimDue(ctx, leaseDuration)` claims one task atomically. The Postgres implementation selects an eligible row ordered by `scheduleTime, id` using `FOR UPDATE SKIP LOCKED`, updates it in the same transaction, and returns the committed claim.
 
 Each claim assigns a fresh UUID `leaseToken`, sets `leaseExpiresAt`, marks the task running, and increments `attempt`. Dispatch begins only after the claim commits.
 
@@ -200,9 +200,34 @@ Adapters must provide atomic operations, not only CRUD:
 - `Complete`, `Retry`, and `Fail` for conditional state transitions.
 - `DeleteFinishedBefore` for bounded terminal-task cleanup.
 
-The caller supplies the adapter through `Config.Storage`. Postgres connection setup belongs in the application layer. No adapter is implemented yet.
+The caller supplies the adapter through `Config.Storage`. Postgres connection setup belongs in the application layer. `internal/storage/postgres` implements the interface with a caller-owned `pgxpool.Pool`:
 
-Postgres will need indexes supporting due queued tasks, expired running leases, and terminal tasks ordered by `finishedAt`. Exact schema, migrations, timestamp authority, and transaction queries remain implementation work.
+```go
+pool, err := pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
+if err != nil {
+    return err
+}
+defer pool.Close()
+adapter := postgres.New(pool)
+if err := adapter.Migrate(ctx); err != nil {
+    return err
+}
+service, err := tasker.New(tasker.Config{Storage: adapter})
+```
+
+`Migrate` installs the initial `tasker_tasks` table and partial indexes for queued, expired, and finished tasks. It is transactional and repeatable; an advisory lock serializes concurrent setup. Future schema changes need versioned migrations. The pool's search path selects the schema.
+
+Postgres supplies the clock for claims, leases, and state-transition timestamps. Creation timestamps and requested schedules come from the caller. Lease durations must be at least one microsecond. Every ownership update requires an unexpired lease, running status, and matching token. JSON columns preserve the original input representation.
+
+Each claim first finalizes up to 100 exhausted expired tasks in a separate committed statement, then atomically claims one eligible task using `FOR UPDATE SKIP LOCKED`. Repeated polls drain recovery backlogs even when there is no dispatchable work. `Retry` on the final attempt records failure immediately. Cleanup requires a positive batch limit and skips locked rows.
+
+Run integration tests against a disposable PostgreSQL database (tested with PostgreSQL 18):
+
+```sh
+TASKER_TEST_DATABASE_URL=postgres://localhost/tasker_test nix develop -c go test -race ./...
+```
+
+Tests create and remove an isolated schema per test and require schema creation permission. Without this environment variable, database tests skip.
 
 Errors are declared in `error.go`. `TaskNotFoundError` includes the requested ID and unwraps to `ErrTaskNotFound`, allowing both `errors.Is` and `errors.AsType`. Other sentinels cover no due task, lost lease, and unimplemented operations.
 
@@ -244,7 +269,7 @@ Cleanup is owned by the service, with no database TTL extension required.
 
 Deferred features are authentication in both directions, live stage/progress reporting, executor cancellation, task rescheduling endpoints, enqueue deduplication, named queues, distributed rate limits, and per-task retention overrides.
 
-Before implementing dispatch, settle request and response size limits, malformed success-body diagnostics, redirect handling, URL validation, exact backoff jitter and burst capacity, and rate-gate coordination with claims. Before implementing lifecycle and storage, settle shutdown behaviour, clock authority, and first-start timestamp semantics.
+Before implementing dispatch, settle request and response size limits, malformed success-body diagnostics, redirect handling, URL validation, exact backoff jitter and burst capacity, and rate-gate coordination with claims. Before implementing lifecycle, settle shutdown behaviour.
 
 Application-specific debounce and atomic coordination between producer writes and enqueueing remain outside Tasker. Producers needing transactional enqueue intent can implement an outbox and a relay; enqueue deduplication would need a separate design.
 
@@ -252,4 +277,4 @@ Application-specific debounce and atomic coordination between producer writes an
 
 Task creation and retrieval work through the injected storage interface and both HTTP routes. Creation validates input, generates a CUID task ID, applies defaults, and persists queued state. Wakeup notifications are not implemented yet. The constructor requires storage and positive effective dispatch deadline and attempt limits.
 
-`Run` remains unimplemented. Dispatch, storage adapters, config loading, application HTTP serving, retries, and cleanup are not implemented. The executable still supplies no storage and therefore fails constructor validation. A caller with an adapter can serve `Handler()` separately.
+`Run` remains unimplemented. The Postgres storage adapter is implemented. HTTP execution, config loading, application HTTP serving, retry scheduling, and periodic cleanup are not implemented. The executable still supplies no storage and therefore fails constructor validation. A caller with an adapter can serve `Handler()` separately.
