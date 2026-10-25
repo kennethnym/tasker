@@ -12,6 +12,10 @@ It is written in Go, and it is backed by SQLite.
 By default, Tasker listens on port 8080. In order to persist data, provide a volume mapping to `/data`.
 Tasker will automatically create and migrate an SQLite database if one does not exist.
 
+The image uses Docker's default user (root). To run as another user, set
+`--user UID:GID` (or `user` in Compose) and ensure that user can write to the
+mounted data directory.
+
 To run it via Docker:
 
 ```bash

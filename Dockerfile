@@ -6,17 +6,13 @@ RUN go mod download
 
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/tasker ./cmd/tasker \
-    && mkdir /data \
-    && chown 65532:65532 /data
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/tasker ./cmd/tasker
 
 FROM scratch
 
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /out/tasker /tasker
-COPY --from=build --chown=65532:65532 /data /data
 
-USER 65532:65532
 WORKDIR /data
 EXPOSE 8080
 
