@@ -2,7 +2,7 @@
 
 Tasker is a standalone Go service for durable, scheduled HTTP task delivery. Producers submit a target URL and arbitrary JSON input. Tasker claims due tasks, POSTs their input to executors, and records success or schedules retries.
 
-The initial deployment is one process with pluggable durable storage. SQLite is the first implemented adapter, using a dedicated Tasker-owned file. This document describes the intended service; the current code is a skeleton.
+The initial deployment is one process with pluggable durable storage. SQLite is the first implemented adapter, using a dedicated Tasker-owned file. This document describes the service and its deferred features.
 
 ## Scope and guarantees
 
@@ -33,7 +33,7 @@ service, err := tasker.New(tasker.Config{
 
 `New` constructs the service without starting background work. `Run(ctx)` manages dispatch and cleanup, cancels cleanup when dispatch exits, and waits for both to stop. The caller serves `Handler()` separately and owns the storage connection lifecycle.
 
-`CreateTask(ctx, CreateTaskConfig)` and `FindTask(ctx, id)` provide the service operations. HTTP handlers delegate to them. Context cancellation will stop background work; the precise shutdown grace period and handling of active requests remain implementation decisions.
+`CreateTask(ctx, CreateTaskConfig)` and `FindTask(ctx, id)` provide the service operations. HTTP handlers delegate to them. SIGINT or SIGTERM cancels background work and active deliveries, leaving interrupted claims recoverable after lease expiry. The HTTP server stops accepting connections and drains active API requests for up to `shutdown-timeout` (default 10 seconds), then cancels requests and closes connections. Storage closes after HTTP shutdown and background work have stopped. A second signal forces process exit. Shutdown timeouts and runtime failures are reported as errors; ordinary signal cancellation exits successfully.
 
 ## Public HTTP API
 
@@ -239,7 +239,7 @@ TaskRetention:          7 * 24 * time.Hour
 
 The binary loads configuration from CLI flags and environment variables. Precedence is environment, then flags, then defaults. Each setting uses a kebab-case flag and an uppercase `TASKER_` environment variable: `--max-dispatches-per-second`, `--max-concurrent-dispatches`, `--dispatch-deadline`, `--max-attempts`, `--min-backoff`, `--max-backoff`, and `--task-retention`. For example, `TASKER_MAX_ATTEMPTS=8 tasker --max-attempts=3` selects eight attempts. `tasker --help` lists all settings and their environment variable names.
 
-Durations use Go duration syntax, such as `30s`, `5m`, or `168h`. Present but empty environment variables are invalid. Args and environment variables are parsed independently into partial configs, then merged over defaults with environment values last. Malformed or nonpositive values in either source are rejected. Backoff bounds are checked after merging. Unknown flags and positional arguments are rejected. Configuration files are not supported. The SQLite file path belongs in application configuration; storage construction remains unimplemented.
+Durations use Go duration syntax, such as `30s`, `5m`, or `168h`. Present but empty environment variables are invalid. Args and environment variables are parsed independently into partial configs, then merged over defaults with environment values last. Malformed or nonpositive values in either source are rejected. Backoff bounds are checked after merging. Unknown flags and positional arguments are rejected. Configuration files are not supported. Application settings are `--listen-address` (default `:8080`), `--database-path` (default `tasker.db`), and `--shutdown-timeout` (default `10s`), with matching `TASKER_LISTEN_ADDRESS`, `TASKER_DATABASE_PATH`, and `TASKER_SHUTDOWN_TIMEOUT` environment variables. The database parent directory must already exist. The app opens SQLite before starting HTTP serving and background work.
 
 Configuration loading and duration parsing belong outside the service. The Go config struct has no YAML tags. Loading must explicitly map the flat external names to its fields.
 
@@ -261,7 +261,7 @@ Cleanup is owned by the service, with no database TTL extension required.
 
 Deferred features are authentication in both directions, live stage/progress reporting, executor cancellation, task rescheduling endpoints, enqueue deduplication, named queues, distributed rate limits, and per-task retention overrides.
 
-Before implementing dispatch, settle request and response size limits, malformed success-body diagnostics, redirect handling, URL validation, exact backoff jitter and burst capacity, and rate-gate coordination with claims. Before implementing lifecycle, settle shutdown behaviour.
+Before implementing dispatch, settle request and response size limits, malformed success-body diagnostics, redirect handling, URL validation, exact backoff jitter and burst capacity, and rate-gate coordination with claims.
 
 Application-specific debounce and atomic coordination between producer writes and enqueueing remain outside Tasker. Producers needing transactional enqueue intent can implement an outbox and a relay; enqueue deduplication would need a separate design.
 
@@ -275,4 +275,4 @@ Non-2xx responses (including redirects), transport failures, response read failu
 
 `Run` also coordinates the cleanup reconciler, which deletes terminal tasks in bounded batches and retries storage failures on the next sweep. The constructor validates positive retention and valid backoff bounds.
 
-The SQLite storage adapter implements persistence, lease fencing, and expired exhausted-lease finalization. Config loading is implemented for defaults, flags, and environment overrides. Application HTTP serving remains unimplemented. The executable still supplies no storage and therefore fails constructor validation.
+The SQLite storage adapter implements persistence, lease fencing, and expired exhausted-lease finalization. Config loading is implemented for defaults, flags, and environment overrides. The executable opens SQLite, serves the HTTP API, runs dispatch and cleanup, and coordinates signal-driven shutdown. HTTP serving failures stop background work, and background service failures stop HTTP serving. The HTTP server uses a five-second header timeout, 30-second read and write timeouts, and a one-minute idle timeout.

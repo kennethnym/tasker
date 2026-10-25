@@ -1,5 +1,5 @@
 // Package tasker defines a durable HTTP task service with at-least-once delivery.
-// Executors are responsible for idempotency. This package is currently a skeleton.
+// Executors are responsible for idempotency.
 package tasker
 
 import (
