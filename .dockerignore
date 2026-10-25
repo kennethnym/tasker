@@ -1,4 +1,5 @@
 **
+!LICENSE
 !go.mod
 !go.sum
 !cmd/
