@@ -285,3 +285,7 @@ Retrieves the current [Task](#task), including its status, delivery attempt coun
 | `500 Internal Server Error` | `failed to find task` | Task could not be read. |
 
 Poll this endpoint until `status` is `succeeded` or `failed`. A failed delivery can return to `queued` while waiting for another attempt.
+
+## License
+
+Tasker is licensed under the [MIT License](LICENSE).

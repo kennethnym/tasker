@@ -10,6 +10,9 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/tasker ./cmd/taske
 
 FROM scratch
 
+LABEL org.opencontainers.image.licenses="MIT"
+
+COPY LICENSE /LICENSE
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /out/tasker /tasker
 
