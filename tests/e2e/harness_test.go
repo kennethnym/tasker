@@ -88,7 +88,7 @@ type processOutput struct {
 	ready chan string
 }
 
-var listenAddress = regexp.MustCompile(`address=(127\.0\.0\.1:\d+)\r?\n`)
+var listenAddress = regexp.MustCompile(`"address":"(127\.0\.0\.1:\d+)"`)
 
 func (o *processOutput) Write(b []byte) (int, error) {
 	o.mu.Lock()

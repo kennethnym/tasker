@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"path/filepath"
 	"time"
@@ -33,10 +34,12 @@ func Open(ctx context.Context, path string) (*Storage, error) {
 	if path == "" {
 		return nil, errors.New("sqlite: database path is required")
 	}
+
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
 	}
+
 	dsn := url.URL{Scheme: "file", Path: filepath.ToSlash(absolute)}
 	params := url.Values{"_txlock": {"immediate"}, "_pragma": {"busy_timeout(5000)", "synchronous(FULL)"}}
 	dsn.RawQuery = params.Encode()
@@ -52,15 +55,18 @@ func Open(ctx context.Context, path string) (*Storage, error) {
 		db.Close()
 		return nil, err
 	}
+
 	var mode string
 	if err := db.QueryRowContext(ctx, `PRAGMA journal_mode=WAL`).Scan(&mode); err != nil {
 		db.Close()
 		return nil, err
 	}
+
 	if mode != "wal" {
 		db.Close()
 		return nil, fmt.Errorf("sqlite: could not enable WAL (mode %q)", mode)
 	}
+
 	return s, nil
 }
 
@@ -77,6 +83,7 @@ func (s *Storage) write(ctx context.Context, fn func(*sql.Tx, time.Time) error) 
 	if err := fn(tx, time.Now().UTC()); err != nil {
 		return err
 	}
+
 	return tx.Commit()
 }
 
@@ -86,25 +93,32 @@ func (s *Storage) migrate(ctx context.Context) error {
 		if err := tx.QueryRowContext(ctx, `PRAGMA application_id`).Scan(&appID); err != nil {
 			return err
 		}
+
 		if err := tx.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
 			return err
 		}
+
 		if appID == applicationID && version == 1 {
 			return nil
 		}
+
 		if appID != 0 || version != 0 {
 			return fmt.Errorf("sqlite: unsupported database application ID %d or schema version %d", appID, version)
 		}
+
 		var tables int
 		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'`).Scan(&tables); err != nil {
 			return err
 		}
+
 		if tables != 0 {
 			return errors.New("sqlite: database is not empty; use a dedicated Tasker file")
 		}
+
 		if _, err := tx.ExecContext(ctx, initialSchema); err != nil {
 			return err
 		}
+
 		_, err := tx.ExecContext(ctx, `PRAGMA application_id=1413567307; PRAGMA user_version=1`)
 		return err
 	})
@@ -126,32 +140,41 @@ func scanTask(row *sql.Row) (tasker.Task, error) {
 	if err != nil {
 		return tasker.Task{}, err
 	}
+
 	t.Input = json.RawMessage(input)
 	if result.Valid {
 		t.Result = json.RawMessage(result.String)
 	}
+
 	t.ScheduleTime, t.CreatedAt, t.UpdatedAt = fromMicros(scheduled), fromMicros(created), fromMicros(updated)
 	t.StartedAt, t.FinishedAt, t.LeaseExpiresAt = nullableTime(started), nullableTime(finished), nullableTime(expires)
 	return t, nil
 }
+
 func fromMicros(n int64) time.Time { return time.UnixMicro(n).UTC() }
+
 func nullableTime(n sql.NullInt64) *time.Time {
 	if !n.Valid {
 		return nil
 	}
+
 	t := fromMicros(n.Int64)
 	return &t
 }
+
 func timeValue(t *time.Time) any {
 	if t == nil {
 		return nil
 	}
+
 	return t.UnixMicro()
 }
+
 func jsonValue(j json.RawMessage) any {
 	if j == nil {
 		return nil
 	}
+
 	return string(j)
 }
 
@@ -171,6 +194,7 @@ func (s *Storage) Get(ctx context.Context, id string) (tasker.Task, error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		return tasker.Task{}, &tasker.TaskNotFoundError{ID: id}
 	}
+
 	return t, err
 }
 
@@ -178,18 +202,57 @@ func (s *Storage) ClaimDue(ctx context.Context, duration time.Duration) (tasker.
 	if duration < time.Microsecond {
 		return tasker.Task{}, errors.New("sqlite: lease duration must be at least one microsecond")
 	}
+
 	var task tasker.Task
 	var found bool
+	var recovered bool
+	type expiredTask struct {
+		id      string
+		attempt int
+	}
+
+	var expired []expiredTask
+
 	err := s.write(ctx, func(tx *sql.Tx, now time.Time) error {
 		// Finalize a bounded recovery batch, including when there is no due task.
-		_, err := tx.ExecContext(ctx, `UPDATE tasker_tasks SET status='failed', finished_at=?1,
+		rows, err := tx.QueryContext(ctx, `UPDATE tasker_tasks SET status='failed', finished_at=?1,
  updated_at=?1, lease_token='', lease_expires_at=NULL,
  last_error=CASE WHEN last_error='' THEN 'lease expired after final attempt' ELSE last_error END
  WHERE id IN (SELECT id FROM tasker_tasks WHERE status='running'
- AND lease_expires_at <= ?1 AND attempt >= max_attempts ORDER BY lease_expires_at, id LIMIT 100)`, now.UnixMicro())
+ AND lease_expires_at <= ?1 AND attempt >= max_attempts ORDER BY lease_expires_at, id LIMIT 100) RETURNING id, attempt`, now.UnixMicro())
 		if err != nil {
 			return err
 		}
+
+		for rows.Next() {
+			var item expiredTask
+			if err := rows.Scan(&item.id, &item.attempt); err != nil {
+				rows.Close()
+				return err
+			}
+
+			expired = append(expired, item)
+		}
+
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+
+		if err := rows.Close(); err != nil {
+			return err
+		}
+
+		// Read the previous state under the same writer lock as the claim.
+		var previousStatus string
+		err = tx.QueryRowContext(ctx, `SELECT status FROM tasker_tasks WHERE attempt < max_attempts AND
+ ((status='queued' AND schedule_time <= ?1) OR (status='running' AND lease_expires_at <= ?1))
+ ORDER BY schedule_time, id LIMIT 1`, now.UnixMicro()).Scan(&previousStatus)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+
+		recovered = previousStatus == "running"
 		task, err = scanTask(tx.QueryRowContext(ctx, `UPDATE tasker_tasks SET
  status='running', attempt=attempt+1, lease_token=?2, lease_expires_at=?3,
  started_at=COALESCE(started_at, ?1), updated_at=?1
@@ -206,9 +269,20 @@ func (s *Storage) ClaimDue(ctx context.Context, duration time.Duration) (tasker.
 	if err != nil {
 		return tasker.Task{}, err
 	}
+
+	logger := slog.With("component", "storage.sqlite")
+	for _, item := range expired {
+		logger.WarnContext(ctx, "task failed after final lease expired", "task_id", item.id, "attempt", item.attempt)
+	}
+
+	if recovered && found {
+		logger.WarnContext(ctx, "task recovered after lease expired", "task_id", task.ID, "attempt", task.Attempt)
+	}
+
 	if !found {
 		return tasker.Task{}, tasker.ErrNoTaskDue
 	}
+
 	return task, nil
 }
 
@@ -221,22 +295,28 @@ func (s *Storage) updateOwned(ctx context.Context, query string, lease tasker.Le
 		if err != nil {
 			return err
 		}
+
 		count, err := result.RowsAffected()
 		if err != nil {
 			return err
 		}
+
 		if count == 0 {
 			return tasker.ErrLeaseLost
 		}
+
 		return nil
 	})
 }
+
 func (s *Storage) RenewLease(ctx context.Context, lease tasker.Lease, duration time.Duration) error {
 	if duration < time.Microsecond {
 		return errors.New("sqlite: lease duration must be at least one microsecond")
 	}
+
 	return s.updateOwned(ctx, `UPDATE tasker_tasks SET lease_expires_at=:now+:duration, updated_at=:now`, lease, sql.Named("duration", duration.Microseconds()))
 }
+
 func (s *Storage) Complete(ctx context.Context, lease tasker.Lease, result json.RawMessage) error {
 	return s.updateOwned(ctx, `UPDATE tasker_tasks SET status='succeeded', result=:result,
  last_error='', finished_at=:now, updated_at=:now, lease_token='', lease_expires_at=NULL`, lease, sql.Named("result", jsonValue(result)))
@@ -250,14 +330,17 @@ func (s *Storage) Retry(ctx context.Context, lease tasker.Lease, scheduleTime ti
  schedule_time=:schedule, last_error=:error, updated_at=:now, lease_token='', lease_expires_at=NULL`,
 		lease, sql.Named("schedule", scheduleTime.UnixMicro()), sql.Named("error", lastError))
 }
+
 func (s *Storage) Fail(ctx context.Context, lease tasker.Lease, lastError string) error {
 	return s.updateOwned(ctx, `UPDATE tasker_tasks SET status='failed', last_error=:error,
  finished_at=:now, updated_at=:now, lease_token='', lease_expires_at=NULL`, lease, sql.Named("error", lastError))
 }
+
 func (s *Storage) DeleteFinishedBefore(ctx context.Context, cutoff time.Time, limit int) (int, error) {
 	if limit <= 0 {
 		return 0, errors.New("sqlite: cleanup limit must be positive")
 	}
+
 	var count int64
 	err := s.write(ctx, func(tx *sql.Tx, _ time.Time) error {
 		result, err := tx.ExecContext(ctx, `DELETE FROM tasker_tasks WHERE id IN (
@@ -266,11 +349,13 @@ func (s *Storage) DeleteFinishedBefore(ctx context.Context, cutoff time.Time, li
 		if err != nil {
 			return err
 		}
+
 		count, err = result.RowsAffected()
 		return err
 	})
 	if err != nil {
 		return 0, err
 	}
+
 	return int(count), nil
 }

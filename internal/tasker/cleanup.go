@@ -12,6 +12,7 @@ const (
 )
 
 type cleanupReconciler struct {
+	logger    *slog.Logger
 	storage   Storage
 	retention time.Duration
 }
@@ -22,8 +23,9 @@ func (c *cleanupReconciler) run(ctx context.Context) {
 
 	for {
 		if err := c.reconcile(ctx, time.Now().UTC()); err != nil && ctx.Err() == nil {
-			slog.ErrorContext(ctx, "failed to clean up finished tasks", "error", err)
+			c.logger.ErrorContext(ctx, "failed to clean up finished tasks", "error", err)
 		}
+
 		select {
 		case <-ctx.Done():
 			return
@@ -38,10 +40,16 @@ func (c *cleanupReconciler) reconcile(ctx context.Context, now time.Time) error 
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+
 		deleted, err := c.storage.DeleteFinishedBefore(ctx, cutoff, cleanupBatchSize)
 		if err != nil {
 			return err
 		}
+
+		if deleted > 0 {
+			c.logger.DebugContext(ctx, "finished tasks removed", "count", deleted, "cutoff", cutoff)
+		}
+
 		if deleted < cleanupBatchSize {
 			return nil
 		}

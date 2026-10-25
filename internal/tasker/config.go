@@ -3,7 +3,8 @@ package tasker
 import "time"
 
 type Config struct {
-	Storage Storage
+	Storage   Storage
+	AccessLog bool
 
 	MaxDispatchesPerSecond  float64
 	MaxConcurrentDispatches int
@@ -25,6 +26,7 @@ var DefaultConfig = Config{
 }
 
 func (c Config) Merge(other Config) Config {
+	c.AccessLog = other.AccessLog
 	if other.Storage != nil {
 		c.Storage = other.Storage
 	}

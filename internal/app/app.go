@@ -26,6 +26,8 @@ func Run(configPath string) error {
 		return err
 	}
 
+	configureLogging(config.Logging)
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -50,6 +52,7 @@ func run(ctx context.Context, config appConfig) (err error) {
 
 	service, err := tasker.New(tasker.Config{
 		Storage:                 storage,
+		AccessLog:               config.Logging.Access,
 		MaxDispatchesPerSecond:  config.Queue.MaxDispatchesPerSecond,
 		MaxConcurrentDispatches: config.Queue.MaxConcurrentDispatches,
 		DispatchDeadline:        config.Queue.DispatchDeadline,
@@ -67,7 +70,7 @@ func run(ctx context.Context, config appConfig) (err error) {
 		return fmt.Errorf("listen: %w", err)
 	}
 
-	slog.Info("tasker listening", "address", listener.Addr().String())
+	slog.With("component", "app").Info("tasker listening", "address", listener.Addr().String())
 
 	return serve(ctx, listener, service, config.HTTP.ShutdownTimeout)
 }
@@ -83,6 +86,7 @@ func serve(ctx context.Context, listener net.Listener, service *tasker.Tasker, s
 
 	server := &http.Server{
 		Handler:           service.Handler(),
+		ErrorLog:          slog.NewLogLogger(slog.Default().With("component", "http.server").Handler(), slog.LevelError),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -114,6 +118,7 @@ func serve(ctx context.Context, listener net.Listener, service *tasker.Tasker, s
 		httpStopped = true
 	}
 
+	slog.With("component", "app").Info("tasker shutting down")
 	cancelWorkers()
 
 	shutdownCtx, stop := context.WithTimeout(context.Background(), shutdownTimeout)
@@ -141,5 +146,25 @@ func serve(ctx context.Context, listener net.Listener, service *tasker.Tasker, s
 		workerErr = nil
 	}
 
-	return errors.Join(httpErr, workerErr, shutdownErr)
+	err := errors.Join(httpErr, workerErr, shutdownErr)
+	if err != nil {
+		slog.With("component", "app").Error("tasker shutdown failed", "error", err)
+	} else {
+		slog.With("component", "app").Info("tasker stopped")
+	}
+
+	return err
+}
+
+func configureLogging(config loggingConfig) {
+	var level slog.Level
+	_ = level.UnmarshalText([]byte(config.Level))
+
+	options := &slog.HandlerOptions{Level: level}
+	var handler slog.Handler = slog.NewJSONHandler(os.Stderr, options)
+	if config.Format == "text" {
+		handler = slog.NewTextHandler(os.Stderr, options)
+	}
+
+	slog.SetDefault(slog.New(handler))
 }
