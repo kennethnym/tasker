@@ -75,25 +75,6 @@ queue:
 
 Please refer to the [reference](#configuration-fields) for more details.
 
-## Logging
-
-Logs go to stderr. Set `logging.format` to `json` (default) or `text`, and
-`logging.level` to `debug`, `info` (default), `warn`, or `error`.
-Runtime logs include startup/shutdown, task creation and outcomes, retries,
-lease recovery, and failures. Debug adds task claims and cleanup counts.
-Task events carry `task_id`; attempt events also carry `attempt`.
-
-Set `logging.access: true` to enable HTTP access logs separately. These include
-method, route pattern, status, response size, duration, and a generated
-`request_id`, also returned in `X-Request-Id`. Runtime HTTP errors carry the same
-ID. Logs have a `component` field for filtering. Access logs use the configured
-minimum level; server errors are logged at error level.
-
-Request/response bodies, headers, and target URLs are not logged. Delivery
-failures use safe error categories (and HTTP status codes), never arbitrary
-nested error messages.
-Use your container runtime or service manager for log collection and rotation.
-
 ## Authentication
 
 Takser supports optional HTTP Basic Auth on inbound and outbound.
