@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"os"
 	"strings"
@@ -13,7 +14,15 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
+type loggingConfig struct {
+	Format string `yaml:"format"`
+	Level  string `yaml:"level"`
+	Access bool   `yaml:"access"`
+}
+
 type appConfig struct {
+	Logging loggingConfig `yaml:"logging"`
+
 	Auth         *credentialSource    `yaml:"auth"`
 	OutboundAuth []outboundCredential `yaml:"outbound_auth"`
 
@@ -42,6 +51,7 @@ type queueConfig struct {
 }
 
 var defaultConfig = appConfig{
+	Logging: loggingConfig{Format: "json", Level: "info"},
 	HTTP: httpConfig{
 		ListenAddress:   ":8080",
 		ShutdownTimeout: 10 * time.Second,
@@ -92,6 +102,15 @@ func loadConfig(path string) (appConfig, error) {
 }
 
 func validateConfig(config appConfig) error {
+	if config.Logging.Format != "json" && config.Logging.Format != "text" {
+		return fmt.Errorf("logging.format must be json or text")
+	}
+
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(config.Logging.Level)); err != nil {
+		return fmt.Errorf("logging.level: %w", err)
+	}
+
 	for _, field := range []struct{ name, value string }{
 		{"http.listen_address", config.HTTP.ListenAddress},
 		{"database.path", config.Database.Path},

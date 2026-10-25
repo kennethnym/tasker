@@ -1,10 +1,15 @@
 package tasker
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
+	"time"
+
+	"github.com/google/uuid"
 )
 
 func (t *Tasker) Handler() http.Handler {
@@ -12,7 +17,7 @@ func (t *Tasker) Handler() http.Handler {
 	mux.HandleFunc("POST /tasks", t.handleCreateTask)
 	mux.HandleFunc("GET /tasks/{id}", t.handleFindTask)
 
-	return basicAuthHandler(mux, t.config.Auth)
+	return t.logRequests(basicAuthHandler(mux, t.config.Auth))
 }
 
 func (t *Tasker) handleCreateTask(w http.ResponseWriter, r *http.Request) {
@@ -25,6 +30,7 @@ func (t *Tasker) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		CreateTaskConfig
 		DispatchDeadline json.RawMessage `json:"dispatchDeadline"`
 	}
+
 	if err := decoder.Decode(&request); err != nil {
 		writeDecodeError(w, err)
 		return
@@ -48,6 +54,7 @@ func (t *Tasker) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, ErrInvalidTaskURL) || errors.Is(err, ErrInvalidTaskInput) || errors.Is(err, ErrInvalidDispatchDeadline) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 		} else {
+			requestLogger(r).ErrorContext(r.Context(), "failed to create task", "error", err)
 			http.Error(w, "failed to create task", http.StatusInternalServerError)
 		}
 
@@ -67,6 +74,7 @@ func (t *Tasker) handleFindTask(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, ErrTaskNotFound) {
 			http.Error(w, "task not found", http.StatusNotFound)
 		} else {
+			requestLogger(r).ErrorContext(r.Context(), "failed to find task", "task_id", r.PathValue("id"), "error", err)
 			http.Error(w, "failed to find task", http.StatusInternalServerError)
 		}
 
@@ -85,4 +93,85 @@ func writeDecodeError(w http.ResponseWriter, err error) {
 	}
 
 	http.Error(w, "body must contain one JSON object with valid task fields", http.StatusBadRequest)
+}
+
+type requestLoggerKey struct{}
+
+func requestLogger(r *http.Request) *slog.Logger {
+	return r.Context().Value(requestLoggerKey{}).(*slog.Logger)
+}
+
+type accessResponse struct {
+	http.ResponseWriter
+	status int
+	size   int
+}
+
+func (w *accessResponse) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w *accessResponse) WriteHeader(status int) {
+	if w.status != 0 {
+		return
+	}
+
+	if status >= 200 {
+		w.status = status
+	}
+
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *accessResponse) Write(b []byte) (int, error) {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+
+	n, err := w.ResponseWriter.Write(b)
+	w.size += n
+
+	return n, err
+}
+
+func (t *Tasker) logRequests(next http.Handler) http.Handler {
+	logger := slog.With("component", "http")
+	accessLogger := slog.With("component", "http.access")
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		requestID := uuid.NewString()
+		w.Header().Set("X-Request-Id", requestID)
+
+		r = r.WithContext(context.WithValue(r.Context(), requestLoggerKey{}, logger.With("request_id", requestID)))
+
+		if !t.config.AccessLog {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		response := &accessResponse{ResponseWriter: w}
+		defer func() {
+			recovered := recover()
+			status := response.status
+			if status == 0 {
+				status = http.StatusOK
+			}
+
+			if recovered != nil {
+				status = http.StatusInternalServerError
+			}
+
+			level := slog.LevelInfo
+			if status >= 500 {
+				level = slog.LevelError
+			}
+
+			// Use the route pattern, never raw URLs, query strings, headers or bodies.
+			accessLogger.Log(r.Context(), level, "handled request", "request_id", requestID, "method", r.Method, "route", r.Pattern, "status", status, "size", response.size, "duration", time.Since(started))
+			if recovered != nil {
+				panic(recovered)
+			}
+		}()
+
+		next.ServeHTTP(response, r)
+	})
 }

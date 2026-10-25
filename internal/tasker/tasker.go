@@ -5,11 +5,13 @@ package tasker
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/url"
 	"time"
 )
 
 type Tasker struct {
+	logger     *slog.Logger
 	config     Config
 	dispatcher *dispatcher
 	cleanup    *cleanupReconciler
@@ -23,8 +25,9 @@ func New(config Config) (*Tasker, error) {
 
 	return &Tasker{
 		config:     config,
+		logger:     slog.With("component", "tasker"),
 		dispatcher: newDispatcher(config),
-		cleanup:    &cleanupReconciler{storage: config.Storage, retention: config.TaskRetention},
+		cleanup:    &cleanupReconciler{storage: config.Storage, retention: config.TaskRetention, logger: slog.With("component", "cleanup")},
 	}, nil
 }
 
@@ -87,6 +90,7 @@ func (t *Tasker) CreateTask(ctx context.Context, config CreateTaskConfig) (Task,
 		return Task{}, err
 	}
 
+	t.logger.InfoContext(ctx, "task created", "task_id", task.ID, "schedule_time", task.ScheduleTime)
 	t.dispatcher.notify()
 
 	return task, nil

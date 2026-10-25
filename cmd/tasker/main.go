@@ -2,7 +2,8 @@ package main
 
 import (
 	"flag"
-	"log"
+	"log/slog"
+	"os"
 
 	"tasker/internal/app"
 )
@@ -12,10 +13,12 @@ func main() {
 	flag.Parse()
 
 	if flag.NArg() != 0 {
-		log.Fatal("usage: tasker --config path/to/tasker.yaml")
+		slog.Error("usage: tasker --config path/to/tasker.yaml")
+		os.Exit(1)
 	}
 
 	if err := app.Run(*path); err != nil {
-		log.Fatal(err)
+		slog.With("component", "app").Error("tasker failed", "error", err)
+		os.Exit(1)
 	}
 }

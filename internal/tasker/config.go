@@ -12,6 +12,7 @@ type Config struct {
 	Storage      Storage
 	Auth         *BasicAuth
 	OutboundAuth map[string]BasicAuth
+	AccessLog    bool
 
 	MaxDispatchesPerSecond  float64
 	MaxConcurrentDispatches int
@@ -33,6 +34,8 @@ var DefaultConfig = Config{
 }
 
 func (c Config) Merge(other Config) Config {
+	c.AccessLog = other.AccessLog
+
 	if other.Auth != nil {
 		c.Auth = other.Auth
 	}

@@ -11,6 +11,7 @@ import (
 )
 
 type dispatcher struct {
+	logger        *slog.Logger
 	storage       Storage
 	limiter       *rate.Limiter
 	slots         chan struct{}
@@ -24,6 +25,7 @@ type dispatcher struct {
 
 func newDispatcher(config Config) *dispatcher {
 	d := &dispatcher{
+		logger:        slog.With("component", "dispatcher"),
 		storage:       config.Storage,
 		limiter:       rate.NewLimiter(rate.Limit(config.MaxDispatchesPerSecond), 1),
 		slots:         make(chan struct{}, config.MaxConcurrentDispatches),
@@ -87,7 +89,7 @@ func (d *dispatcher) run(ctx context.Context) error {
 
 			wake := d.wake
 			if !errors.Is(err, ErrNoTaskDue) {
-				slog.ErrorContext(ctx, "failed to claim task", "error", err)
+				d.logger.ErrorContext(ctx, "failed to claim task", "error", err)
 				// Notifications must not cause a tight retry loop on storage errors.
 				wake = nil
 			}
@@ -104,6 +106,7 @@ func (d *dispatcher) run(ctx context.Context) error {
 			continue
 		}
 
+		d.logger.DebugContext(ctx, "task claimed", "task_id", task.ID, "attempt", task.Attempt)
 		active.Add(1)
 		go func(task Task) {
 			defer active.Done()
