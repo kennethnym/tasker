@@ -119,9 +119,15 @@ Tasker sends an HTTP `POST` to the task's `url`, with `input` as the request bod
 | `X-Task-Id` | Task ID. |
 | `X-Task-Attempt` | Current attempt number, starting at `1`. |
 
-Any `2xx` response marks the task as succeeded. A valid JSON response body of at most 1 MiB is stored in `result`. Empty, invalid JSON, or oversized response bodies leave `result` as `null` without failing the task.
+Tasker guarantees at-least-once delivery, but deliveries of the same task can happen more than once. Task executors should take this into consideration.
 
-Non-`2xx` responses, network errors, and timeouts cause retries with backoff until `maxAttempts` is reached. Redirects are not followed. Tasks can be delivered more than once; workers should use `X-Task-Id` to avoid repeating side effects.
+### Result handling
+
+- Any `2xx` response marks the task as succeeded.
+- Non-`2xx` responses, network errors, and timeouts are all considered failures. Tasker will attempt to retry the task with backoff, until `maxAttempts` is reached.
+- A valid JSON response body of at most 1 MiB is stored in `result`.
+- Empty, invalid JSON, or oversized response bodies will be discarded and leave `result` as `null` without failing the task.
+- Redirects are not followed.
 
 ## Reference
 
