@@ -20,10 +20,10 @@ type dispatcher struct {
 	pollInterval  time.Duration
 
 	// execute handles lease renewal, outcomes, and cancellation.
-	execute func(context.Context, Task)
+	execute func(context.Context, ClaimResult)
 }
 
-func newDispatcher(config Config) *dispatcher {
+func newDispatcher(config Config, instrumentation *metrics) *dispatcher {
 	d := &dispatcher{
 		logger:        slog.With("component", "dispatcher"),
 		storage:       config.Storage,
@@ -34,7 +34,7 @@ func newDispatcher(config Config) *dispatcher {
 		pollInterval:  time.Second,
 	}
 
-	executor := newExecutor(config, d.leaseDuration)
+	executor := newExecutor(config, d.leaseDuration, instrumentation)
 	d.execute = executor.execute
 
 	return d
@@ -79,7 +79,7 @@ func (d *dispatcher) run(ctx context.Context) error {
 			return err
 		}
 
-		task, err := d.storage.ClaimDue(ctx, d.leaseDuration)
+		claim, err := d.storage.ClaimDue(ctx, d.leaseDuration)
 		if err != nil {
 			<-d.slots
 
@@ -106,13 +106,13 @@ func (d *dispatcher) run(ctx context.Context) error {
 			continue
 		}
 
-		d.logger.DebugContext(ctx, "task claimed", "task_id", task.ID, "attempt", task.Attempt)
+		d.logger.DebugContext(ctx, "task claimed", "task_id", claim.Task.ID, "attempt", claim.Task.Attempt)
 		active.Add(1)
-		go func(task Task) {
+		go func() {
 			defer active.Done()
 			defer func() { <-d.slots }()
 
-			d.execute(ctx, task)
-		}(task)
+			d.execute(ctx, claim)
+		}()
 	}
 }

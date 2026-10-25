@@ -13,6 +13,8 @@ func TestConfig(t *testing.T) {
 	for _, tc := range []struct{ name, data, want string }{
 		{"defaults", "{}", ""},
 		{"logging", "logging:\n  format: text\n  level: debug\n  access: true", ""},
+		{"metrics", "metrics:\n  enabled: true", ""},
+		{"invalid metrics", "metrics:\n  enabled: invalid", "decode config"},
 		{"invalid log format", "logging:\n  format: xml", "logging.format"},
 		{"invalid log level", "logging:\n  level: loud", "logging.level"},
 		{"override", "queue:\n  max_attempts: 8\n  dispatch_deadline: \"30s\"", ""},
@@ -82,6 +84,10 @@ func TestConfig(t *testing.T) {
 
 			if tc.name == "logging" && (config.Logging.Format != "text" || config.Logging.Level != "debug" || !config.Logging.Access) {
 				t.Fatalf("unexpected logging config: %+v", config.Logging)
+			}
+
+			if tc.name == "metrics" && !config.Metrics.Enabled {
+				t.Fatal("metrics was not enabled")
 			}
 
 			if tc.name == "database override" && config.Database.Path != "custom.db" {

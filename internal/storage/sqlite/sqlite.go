@@ -198,12 +198,13 @@ func (s *Storage) Get(ctx context.Context, id string) (tasker.Task, error) {
 	return t, err
 }
 
-func (s *Storage) ClaimDue(ctx context.Context, duration time.Duration) (tasker.Task, error) {
+func (s *Storage) ClaimDue(ctx context.Context, duration time.Duration) (tasker.ClaimResult, error) {
 	if duration < time.Microsecond {
-		return tasker.Task{}, errors.New("sqlite: lease duration must be at least one microsecond")
+		return tasker.ClaimResult{}, errors.New("sqlite: lease duration must be at least one microsecond")
 	}
 
 	var task tasker.Task
+	var readyAt time.Time
 	var found bool
 	var recovered bool
 	type expiredTask struct {
@@ -245,14 +246,21 @@ func (s *Storage) ClaimDue(ctx context.Context, duration time.Duration) (tasker.
 
 		// Read the previous state under the same writer lock as the claim.
 		var previousStatus string
-		err = tx.QueryRowContext(ctx, `SELECT status FROM tasker_tasks WHERE attempt < max_attempts AND
+		var scheduled int64
+		var expires sql.NullInt64
+		err = tx.QueryRowContext(ctx, `SELECT status, schedule_time, lease_expires_at FROM tasker_tasks WHERE attempt < max_attempts AND
  ((status='queued' AND schedule_time <= ?1) OR (status='running' AND lease_expires_at <= ?1))
- ORDER BY schedule_time, id LIMIT 1`, now.UnixMicro()).Scan(&previousStatus)
+ ORDER BY schedule_time, id LIMIT 1`, now.UnixMicro()).Scan(&previousStatus, &scheduled, &expires)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
 
 		recovered = previousStatus == "running"
+		readyAt = fromMicros(scheduled)
+		if recovered {
+			readyAt = fromMicros(expires.Int64)
+		}
+
 		task, err = scanTask(tx.QueryRowContext(ctx, `UPDATE tasker_tasks SET
  status='running', attempt=attempt+1, lease_token=?2, lease_expires_at=?3,
  started_at=COALESCE(started_at, ?1), updated_at=?1
@@ -267,7 +275,7 @@ func (s *Storage) ClaimDue(ctx context.Context, duration time.Duration) (tasker.
 		return err
 	})
 	if err != nil {
-		return tasker.Task{}, err
+		return tasker.ClaimResult{}, err
 	}
 
 	logger := slog.With("component", "storage.sqlite")
@@ -279,11 +287,30 @@ func (s *Storage) ClaimDue(ctx context.Context, duration time.Duration) (tasker.
 		logger.WarnContext(ctx, "task recovered after lease expired", "task_id", task.ID, "attempt", task.Attempt)
 	}
 
+	result := tasker.ClaimResult{Task: task, ReadyAt: readyAt, Recovered: recovered && found, Exhausted: len(expired)}
 	if !found {
-		return tasker.Task{}, tasker.ErrNoTaskDue
+		return result, tasker.ErrNoTaskDue
 	}
 
-	return task, nil
+	return result, nil
+}
+
+// QueueStats uses the existing partial indexes and one read statement, without
+// scanning retained task payloads or acquiring a writer transaction.
+func (s *Storage) QueueStats(ctx context.Context, now time.Time) (tasker.QueueStats, error) {
+	var stats tasker.QueueStats
+	var oldest sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `SELECT
+ (SELECT count(*) FROM tasker_tasks WHERE status='queued' AND schedule_time <= ?1),
+ (SELECT count(*) FROM tasker_tasks WHERE status='queued' AND schedule_time > ?1),
+ (SELECT count(*) FROM tasker_tasks WHERE status='running' AND lease_expires_at > ?1),
+ (SELECT count(*) FROM tasker_tasks WHERE status='running' AND lease_expires_at <= ?1),
+ (SELECT min(schedule_time) FROM tasker_tasks WHERE status='queued' AND schedule_time <= ?1)`,
+		now.UnixMicro()).Scan(&stats.Due, &stats.Scheduled, &stats.Running, &stats.Expired, &oldest)
+
+	stats.OldestDueAt = nullableTime(oldest)
+
+	return stats, err
 }
 
 const owned = ` WHERE id=:id AND lease_token=:token AND status='running' AND lease_expires_at > :now`

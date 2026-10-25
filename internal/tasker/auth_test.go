@@ -103,7 +103,7 @@ func TestOutboundAuthentication(t *testing.T) {
 			config.OutboundAuth[configuredOrigin] = BasicAuth{"tasker", "secret"}
 		}
 
-		e := newExecutor(config, 0)
+		e := newExecutor(config, 0, nil)
 		_, err := e.deliver(context.Background(), Task{URL: destination.URL + "/work", Input: []byte(`{}`), DispatchDeadline: "1s"})
 		if err != nil {
 			t.Fatal(err)
@@ -136,13 +136,13 @@ func TestOutboundAuthentication(t *testing.T) {
 
 	config := DefaultConfig
 	config.OutboundAuth = map[string]BasicAuth{ro: {"tasker", "secret"}}
-	_, err := newExecutor(config, 0).deliver(context.Background(), Task{URL: redirect.URL, Input: []byte(`{}`), DispatchDeadline: "1s"})
+	_, err := newExecutor(config, 0, nil).deliver(context.Background(), Task{URL: redirect.URL, Input: []byte(`{}`), DispatchDeadline: "1s"})
 	if err == nil || received != "" {
 		t.Fatal("redirect followed or not reported as failure")
 	}
 
 	u.User = url.UserPassword("user", "secret")
-	_, err = newExecutor(config, 0).deliver(context.Background(), Task{URL: u.String(), DispatchDeadline: "1s"})
+	_, err = newExecutor(config, 0, nil).deliver(context.Background(), Task{URL: u.String(), DispatchDeadline: "1s"})
 	if err == nil || received != "" {
 		t.Fatal("URL credentials accepted")
 	}
@@ -215,7 +215,7 @@ func TestOutboundAuthMatchesTransportHost(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			executor := newExecutor(config, 0)
+			executor := newExecutor(config, 0, nil)
 			executor.client.Transport = transport
 			_, err = executor.deliver(context.Background(), Task{URL: tc.target, Input: []byte(`{}`), DispatchDeadline: "1s"})
 			if err != nil {

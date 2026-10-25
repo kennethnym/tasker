@@ -9,10 +9,11 @@ import (
 )
 
 type Config struct {
-	Storage      Storage
-	Auth         *BasicAuth
-	OutboundAuth map[string]BasicAuth
-	AccessLog    bool
+	Storage        Storage
+	Auth           *BasicAuth
+	OutboundAuth   map[string]BasicAuth
+	AccessLog      bool
+	MetricsEnabled bool
 
 	MaxDispatchesPerSecond  float64
 	MaxConcurrentDispatches int
@@ -35,6 +36,7 @@ var DefaultConfig = Config{
 
 func (c Config) Merge(other Config) Config {
 	c.AccessLog = other.AccessLog
+	c.MetricsEnabled = other.MetricsEnabled
 
 	if other.Auth != nil {
 		c.Auth = other.Auth

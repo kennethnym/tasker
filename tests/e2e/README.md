@@ -48,6 +48,10 @@ for the same pull request or branch.
   absence of executor deliveries for rejected requests.
 - Concurrent delivery limits, tasks remaining unclaimed while slots are full,
   and cumulative dispatch rate including retries.
+- Opt-in authenticated metrics, queue snapshots, attempt outcomes, timeouts,
+  retries, histogram observations, bounded labels, and counters resetting while
+  queue gauges survive restart. Recovery tests also verify recovery/failure
+  counters and queue delay measured from lease expiry.
 - Queued and completed tasks surviving a forced exit; SIGTERM and forced-exit
   recovery; abandoned final attempts becoming failed after lease expiry.
 - Lease renewal beyond 30 seconds with another process actively polling the

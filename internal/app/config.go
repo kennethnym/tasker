@@ -22,6 +22,7 @@ type loggingConfig struct {
 
 type appConfig struct {
 	Logging loggingConfig `yaml:"logging"`
+	Metrics metricsConfig `yaml:"metrics"`
 
 	Auth         *credentialSource    `yaml:"auth"`
 	OutboundAuth []outboundCredential `yaml:"outbound_auth"`
@@ -29,6 +30,10 @@ type appConfig struct {
 	HTTP     httpConfig     `yaml:"http"`
 	Database databaseConfig `yaml:"database"`
 	Queue    queueConfig    `yaml:"queue"`
+}
+
+type metricsConfig struct {
+	Enabled bool `yaml:"enabled"`
 }
 
 type databaseConfig struct {

@@ -26,9 +26,10 @@ type executor struct {
 	leaseDuration time.Duration
 	minBackoff    time.Duration
 	maxBackoff    time.Duration
+	metrics       *metrics
 }
 
-func newExecutor(config Config, leaseDuration time.Duration) *executor {
+func newExecutor(config Config, leaseDuration time.Duration, instrumentation *metrics) *executor {
 	return &executor{
 		logger:       slog.With("component", "executor"),
 		storage:      config.Storage,
@@ -40,10 +41,12 @@ func newExecutor(config Config, leaseDuration time.Duration) *executor {
 		leaseDuration: leaseDuration,
 		minBackoff:    config.MinBackoff,
 		maxBackoff:    config.MaxBackoff,
+		metrics:       instrumentation,
 	}
 }
 
-func (e *executor) execute(ctx context.Context, task Task) {
+func (e *executor) execute(ctx context.Context, claim ClaimResult) {
+	task := claim.Task
 	logger := e.logger.With("task_id", task.ID, "attempt", task.Attempt)
 	lease := Lease{TaskID: task.ID, Token: task.LeaseToken}
 
@@ -65,8 +68,20 @@ func (e *executor) execute(ctx context.Context, task Task) {
 	go e.sendHeartbeat(workCtx, lease, cancel, stopRenewal, renewed)
 
 	started := time.Now()
+	if e.metrics != nil {
+		e.metrics.inFlight.Inc()
+		e.metrics.queueDelay.Observe(max(0, started.Sub(claim.ReadyAt).Seconds()))
+	}
+
 	result, err := e.deliver(workCtx, task)
 	duration := time.Since(started)
+
+	if e.metrics != nil {
+		e.metrics.inFlight.Dec()
+		e.metrics.deliveries.WithLabelValues(deliveryOutcome(err)).Inc()
+		e.metrics.deliveryDuration.Observe(duration.Seconds())
+	}
+
 	close(stopRenewal)
 
 	if renewalErr := <-renewed; renewalErr != nil {

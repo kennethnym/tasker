@@ -15,6 +15,7 @@ type Tasker struct {
 	config     Config
 	dispatcher *dispatcher
 	cleanup    *cleanupReconciler
+	metrics    *metrics
 }
 
 func New(config Config) (*Tasker, error) {
@@ -23,11 +24,18 @@ func New(config Config) (*Tasker, error) {
 		return nil, err
 	}
 
+	var instrumentation *metrics
+	if config.MetricsEnabled {
+		instrumentation = newMetrics(config.Storage)
+		config.Storage = &instrumentedStorage{Storage: config.Storage, metrics: instrumentation}
+	}
+
 	return &Tasker{
 		config:     config,
 		logger:     slog.With("component", "tasker"),
-		dispatcher: newDispatcher(config),
+		dispatcher: newDispatcher(config, instrumentation),
 		cleanup:    &cleanupReconciler{storage: config.Storage, retention: config.TaskRetention, logger: slog.With("component", "cleanup")},
+		metrics:    instrumentation,
 	}, nil
 }
 

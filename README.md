@@ -58,6 +58,8 @@ logging:
   format: json
   level: info
   access: false
+metrics:
+  enabled: false
 http:
   listen_address: ":8080"
   shutdown_timeout: 10s
@@ -74,6 +76,16 @@ queue:
 ```
 
 Please refer to the [reference](#configuration-fields) for more details.
+
+## Metrics
+
+Set `metrics.enabled: true` in `tasker.yaml` to expose `GET /metrics` for
+Prometheus and Grafana. It uses the HTTP API's listen address and authentication.
+Metrics cover queue depth and delay, deliveries, retries, persisted outcomes,
+lease recovery, storage errors, HTTP requests, and Go/process health.
+
+See the [metrics reference and setup guide](docs/metrics.md), including a sample
+Prometheus configuration, alert rules, and an importable Grafana dashboard.
 
 ## Authentication
 
@@ -186,6 +198,7 @@ Successful responses use `Content-Type: application/json`. Error responses conta
 | `logging.format` | string | `json` | Log format: `json` or `text`. Logs are written to stderr. |
 | `logging.level` | string | `info` | Minimum severity for runtime and access logs: `debug`, `info`, `warn`, or `error` (case-insensitive). Go slog level offsets such as `info+2` are also accepted. |
 | `logging.access` | boolean | `false` | Enable HTTP access logs, including authentication failures. Records include method, route pattern, status, response size, duration, and a generated request ID returned in `X-Request-Id`. Subject to `logging.level`; server errors use error level, other requests use info level. |
+| `metrics.enabled` | boolean | `false` | Expose `GET /metrics` on the HTTP listener, protected by the same inbound auth as the task API. See [metrics](docs/metrics.md). |
 | `http.listen_address` | string | `:8080` | HTTP server listen address in `host:port` form. An empty host listens on all interfaces. Must not be empty or whitespace-only. |
 | `http.shutdown_timeout` | duration string | `10s` | Grace period for in-flight HTTP requests during shutdown. Must be positive. |
 | `database.path` | string | `tasker.db` | SQLite database filename. Relative paths resolve against the working directory (`/data` in Docker), not the config file's directory. The parent directory must exist; the database is created and migrated automatically. Must not be empty or whitespace-only. |

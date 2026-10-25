@@ -31,6 +31,7 @@ func TestBasicAuthentication(t *testing.T) {
 	}
 
 	p := startTasker(t, "", nil, map[string]any{
+		"metrics": map[string]any{"enabled": true},
 		"auth": map[string]any{
 			"username":      "caller",
 			"password_file": filepath.Join(dir, "api-password"),
@@ -42,7 +43,7 @@ func TestBasicAuthentication(t *testing.T) {
 		}},
 	})
 
-	for _, endpoint := range []struct{ method, path string }{{"POST", "/tasks"}, {"GET", "/tasks/missing"}} {
+	for _, endpoint := range []struct{ method, path string }{{"POST", "/tasks"}, {"GET", "/tasks/missing"}, {"GET", "/metrics"}} {
 		status, headers, _ := p.request(t, endpoint.method, endpoint.path, nil)
 		if status != 401 || headers.Get("WWW-Authenticate") == "" {
 			t.Fatalf("unprotected endpoint: %s %d", endpoint.path, status)
@@ -72,6 +73,10 @@ func TestBasicAuthentication(t *testing.T) {
 		}
 
 		return resp.StatusCode, data
+	}
+
+	if status, body := request("GET", "/metrics", nil); status != 200 {
+		t.Fatalf("authenticated scrape: %d %s", status, body)
 	}
 
 	payload, _ := json.Marshal(map[string]any{"url": worker.server.URL + "/work", "input": map[string]any{}})

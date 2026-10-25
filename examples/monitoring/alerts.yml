@@ -1,0 +1,37 @@
+groups:
+  - name: tasker
+    rules:
+      - alert: TaskerUnavailable
+        expr: up{job="tasker"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Tasker metrics are unreachable on {{ $labels.instance }}"
+      - alert: TaskerQueueSnapshotFailed
+        expr: tasker_queue_stats_up{job="tasker"} == 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Tasker cannot read queue statistics on {{ $labels.instance }}"
+      - alert: TaskerQueueDelayed
+        expr: tasker_queue_oldest_due_age_seconds{job="tasker"} > 60
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Tasker has overdue queued work on {{ $labels.instance }}"
+      - alert: TaskerRecoveryDelayed
+        expr: tasker_queue_tasks{job="tasker",state="expired"} > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Tasker expired leases await recovery on {{ $labels.instance }}"
+      - alert: TaskerTasksFailing
+        expr: increase(tasker_tasks_finished_total{job="tasker",outcome="failed"}[5m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Tasker tasks permanently failed on {{ $labels.instance }}"
