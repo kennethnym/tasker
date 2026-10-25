@@ -202,28 +202,80 @@ func TestPeriodicRetention(t *testing.T) {
 		t.Skip("waits for the real one-minute cleanup interval")
 	}
 	t.Parallel()
+	responses := make(chan int)
 	e := newExecutor(t, func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/hold":
+		if r.URL.Path == "/hold" {
 			<-r.Context().Done()
-		case "/fail":
-			w.WriteHeader(http.StatusServiceUnavailable)
-		default:
+			return
+		}
+		select {
+		case status := <-responses:
+			w.WriteHeader(status)
 			_, _ = io.WriteString(w, `{"ok":true}`)
+		case <-r.Context().Done():
 		}
 	})
 	p := startTasker(t, "", map[string]string{"task_retention": "5s", "dispatch_deadline": "2m", "max_attempts": "1"})
-	success := p.create(t, e.server.URL+"/success", `{}`, nil)
-	assertDelivery(t, e.next(t, waitTimeout), success, 1, "/success")
-	p.awaitStatus(t, success.ID, "succeeded", waitTimeout)
-	failure := p.create(t, e.server.URL+"/fail", `{}`, nil)
-	assertDelivery(t, e.next(t, waitTimeout), failure, 1, "/fail")
-	p.awaitStatus(t, failure.ID, "failed", waitTimeout)
+	var outcomes []task
+	for _, tc := range []struct {
+		path, status string
+		code         int
+	}{
+		{"/success", "succeeded", http.StatusOK},
+		{"/fail", "failed", http.StatusServiceUnavailable},
+	} {
+		created := p.create(t, e.server.URL+tc.path, `{"work":"reconcile"}`, nil)
+		assertDelivery(t, e.next(t, waitTimeout), created, 1, tc.path)
+		// Gate the response so running is observable before persisting an outcome.
+		running := p.get(t, created.ID)
+		if running.Status != "running" || running.Attempt != 1 || running.StartedAt == nil || running.FinishedAt != nil {
+			t.Fatalf("expected running task before outcome: %+v", running)
+		}
+		select {
+		case responses <- tc.code:
+		case <-time.After(waitTimeout):
+			t.Fatal("executor did not accept response instruction")
+		}
+		outcome := p.awaitStatus(t, created.ID, tc.status, waitTimeout)
+		assertTerminal(t, outcome, tc.status, 1)
+		assertJSON(t, outcome.Input, string(created.Input))
+		if !outcome.StartedAt.Equal(*running.StartedAt) {
+			t.Error("startedAt changed at completion")
+		}
+		if tc.status == "succeeded" {
+			assertJSON(t, outcome.Result, `{"ok":true}`)
+		} else {
+			assertJSON(t, outcome.Result, `null`)
+			if !strings.Contains(outcome.LastError, "HTTP 503") {
+				t.Errorf("failure outcome = %q, want HTTP 503", outcome.LastError)
+			}
+		}
+		outcomes = append(outcomes, outcome)
+	}
 	queued := p.create(t, e.server.URL+"/future", `{}`, map[string]any{"scheduleTime": time.Now().Add(time.Hour)})
 	running := p.create(t, e.server.URL+"/hold", `{}`, nil)
 	assertDelivery(t, e.next(t, waitTimeout), running, 1, "/hold")
-	awaitDeleted(t, p, success.ID, 75*time.Second)
-	awaitDeleted(t, p, failure.ID, waitTimeout)
+	// Observe both outcomes together until the real periodic sweep removes them,
+	// without restarting Tasker or touching the database.
+	pending := append([]task(nil), outcomes...)
+	eventually(t, 75*time.Second, "terminal outcomes expire", func() bool {
+		var retained []task
+		for _, outcome := range pending {
+			status, _, body := p.request(t, http.MethodGet, "/tasks/"+outcome.ID, nil)
+			switch status {
+			case http.StatusOK:
+				retained = append(retained, outcome)
+			case http.StatusNotFound:
+				if time.Now().Before(outcome.FinishedAt.Add(5 * time.Second)) {
+					t.Errorf("%s outcome deleted before retention elapsed", outcome.Status)
+				}
+			default:
+				t.Fatalf("get during cleanup: HTTP %d: %s", status, body)
+			}
+		}
+		pending = retained
+		return len(pending) == 0
+	})
 	if task := p.get(t, queued.ID); task.Status != "queued" || task.Attempt != 0 {
 		t.Errorf("periodic cleanup affected queued task: %+v", task)
 	}

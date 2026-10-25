@@ -54,6 +54,9 @@ for the same pull request or branch.
   same database.
 - Startup and periodic retention removing succeeded/failed tasks while
   preserving queued/running tasks.
+- The periodic retention test follows enqueue, gated execution, persisted success
+  and failure outcomes, and eventual deletion in one uninterrupted process. It
+  checks that outcomes are not deleted before their retention period expires.
 
 ## Harness behavior
 
