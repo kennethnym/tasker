@@ -6,6 +6,7 @@ require github.com/lucsky/cuid v1.2.1
 
 require (
 	github.com/google/uuid v1.6.0
+	go.yaml.in/yaml/v3 v3.0.4
 	golang.org/x/time v0.16.0
 	modernc.org/sqlite v1.61.0
 )

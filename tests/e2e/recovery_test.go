@@ -62,7 +62,7 @@ func TestInterruptedDeliveryRecovery(t *testing.T) {
 				_, _ = io.WriteString(w, `{"recovered":true}`)
 			})
 			database := filepath.Join(t.TempDir(), "tasks.db")
-			config := map[string]string{"dispatch-deadline": "2m", "max-attempts": strconv.Itoa(tc.attempts)}
+			config := map[string]string{"dispatch_deadline": "2m", "max_attempts": strconv.Itoa(tc.attempts)}
 			p := startTasker(t, database, config)
 			created := p.create(t, e.server.URL, `{"work":"recover"}`, nil)
 			first := e.next(t, waitTimeout)
@@ -131,7 +131,7 @@ func TestLeaseRenewalWithCompetingProcess(t *testing.T) {
 		_, _ = io.WriteString(w, `{"ok":true}`)
 	})
 	database := filepath.Join(t.TempDir(), "tasks.db")
-	config := map[string]string{"dispatch-deadline": "2m", "max-concurrent-dispatches": "1"}
+	config := map[string]string{"dispatch_deadline": "2m", "max_concurrent_dispatches": "1"}
 	first := startTasker(t, database, config)
 	created := first.create(t, e.server.URL+"/long", `{}`, nil)
 	d := e.next(t, waitTimeout)
@@ -169,7 +169,7 @@ func TestRetentionOnStartup(t *testing.T) {
 		}
 	})
 	database := filepath.Join(t.TempDir(), "tasks.db")
-	config := map[string]string{"max-attempts": "1", "dispatch-deadline": "2m"}
+	config := map[string]string{"max_attempts": "1", "dispatch_deadline": "2m"}
 	p := startTasker(t, database, config)
 	success := p.create(t, e.server.URL+"/success", `{}`, nil)
 	assertDelivery(t, e.next(t, waitTimeout), success, 1, "/success")
@@ -183,7 +183,7 @@ func TestRetentionOnStartup(t *testing.T) {
 	p.stop(t, false)
 	// All four tasks now predate this retention period; only terminal ones
 	// should be deleted. Restart invokes the actual startup cleanup sweep.
-	config["task-retention"] = "1us"
+	config["task_retention"] = "1us"
 	p = startTasker(t, database, config)
 	for _, id := range []string{success.ID, failure.ID} {
 		awaitDeleted(t, p, id, waitTimeout)
@@ -212,7 +212,7 @@ func TestPeriodicRetention(t *testing.T) {
 			_, _ = io.WriteString(w, `{"ok":true}`)
 		}
 	})
-	p := startTasker(t, "", map[string]string{"task-retention": "5s", "dispatch-deadline": "2m", "max-attempts": "1"})
+	p := startTasker(t, "", map[string]string{"task_retention": "5s", "dispatch_deadline": "2m", "max_attempts": "1"})
 	success := p.create(t, e.server.URL+"/success", `{}`, nil)
 	assertDelivery(t, e.next(t, waitTimeout), success, 1, "/success")
 	p.awaitStatus(t, success.ID, "succeeded", waitTimeout)

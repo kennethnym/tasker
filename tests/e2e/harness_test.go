@@ -13,13 +13,14 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
+
+	"go.yaml.in/yaml/v3"
 )
 
 const waitTimeout = 10 * time.Second
@@ -47,6 +48,7 @@ func runTests(m *testing.M) int {
 		fmt.Fprintf(os.Stderr, "build tasker: %v\n%s", err, output)
 		return 1
 	}
+
 	return m.Run()
 }
 
@@ -98,6 +100,7 @@ func (o *processOutput) Write(b []byte) (int, error) {
 		default:
 		}
 	}
+
 	return n, err
 }
 
@@ -113,36 +116,55 @@ func startTasker(t *testing.T, database string, overrides map[string]string) *pr
 		database = filepath.Join(t.TempDir(), "tasks.db")
 	}
 	settings := map[string]string{
-		"listen-address": "127.0.0.1:0", "database-path": database,
-		"shutdown-timeout": "2s", "dispatch-deadline": "5s",
-		"max-attempts": "3", "min-backoff": "100ms", "max-backoff": "100ms",
-		"max-concurrent-dispatches": "4", "max-dispatches-per-second": "1000",
-		"task-retention": "1h",
+		"listen_address": "127.0.0.1:0", "database_path": database,
+		"shutdown_timeout": "2s", "dispatch_deadline": "5s",
+		"max_attempts": "3", "min_backoff": "100ms", "max_backoff": "100ms",
+		"max_concurrent_dispatches": "4", "max_dispatches_per_second": "1000",
+		"task_retention": "1h",
 	}
+
 	for key, value := range overrides {
 		settings[key] = value
 	}
-	keys := make([]string, 0, len(settings))
-	for key := range settings {
-		keys = append(keys, key)
+	httpSettings, queueSettings, databaseSettings := map[string]any{}, map[string]any{}, map[string]any{}
+	fileSettings := map[string]any{"http": httpSettings, "queue": queueSettings, "database": databaseSettings}
+	for key, value := range settings {
+		target := queueSettings
+		switch key {
+		case "listen_address", "shutdown_timeout":
+			target = httpSettings
+		case "database_path":
+			target = databaseSettings
+			key = "path"
+		}
+		switch key {
+		case "max_attempts", "max_concurrent_dispatches", "max_dispatches_per_second":
+			number, err := strconv.ParseFloat(value, 64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			target[key] = number
+		default:
+			target[key] = value
+		}
 	}
-	sort.Strings(keys)
-	var args []string
-	for _, key := range keys {
-		args = append(args, "--"+key+"="+settings[key])
+
+	data, err := yaml.Marshal(fileSettings)
+	if err != nil {
+		t.Fatal(err)
 	}
+
+	configPath := filepath.Join(t.TempDir(), "tasker.yaml")
+	if err := os.WriteFile(configPath, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+
 	p := &process{
-		cmd: exec.Command(binaryPath, args...), done: make(chan struct{}),
+		cmd: exec.Command(binaryPath, "--config", configPath), done: make(chan struct{}),
 		output: &processOutput{ready: make(chan string, 1)},
 		client: &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{}},
 	}
 	p.cmd.Dir = filepath.Dir(database)
-	p.cmd.Env = []string{}
-	for _, value := range os.Environ() {
-		if !strings.HasPrefix(value, "TASKER_") {
-			p.cmd.Env = append(p.cmd.Env, value)
-		}
-	}
 	p.cmd.Stdout, p.cmd.Stderr = p.output, p.output
 	if err := p.cmd.Start(); err != nil {
 		t.Fatalf("start tasker: %v", err)
@@ -189,6 +211,7 @@ func (p *process) stop(t *testing.T, force bool) {
 		} else {
 			err = p.cmd.Process.Signal(syscall.SIGTERM)
 		}
+
 		if err != nil {
 			t.Errorf("stop tasker: %v", err)
 		}
@@ -206,6 +229,7 @@ func (p *process) stop(t *testing.T, force bool) {
 			}
 		}
 	}
+
 	if !p.killed && p.exitErr != nil {
 		t.Errorf("tasker exited unsuccessfully: %v", p.exitErr)
 	}
@@ -217,6 +241,7 @@ func (p *process) request(t *testing.T, method, path string, body []byte) (int, 
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -251,9 +276,11 @@ func (p *process) create(t *testing.T, url string, input string, fields map[stri
 	if created.ID == "" || headers.Get("Location") != "/tasks/"+created.ID {
 		t.Fatalf("invalid creation identity: id=%q location=%q", created.ID, headers.Get("Location"))
 	}
+
 	if created.Status != "queued" || created.Attempt != 0 {
 		t.Fatalf("creation must return queued attempt zero: %+v", created)
 	}
+
 	if created.URL != url {
 		t.Errorf("created URL = %q, want %q", created.URL, url)
 	}
@@ -267,6 +294,7 @@ func (p *process) get(t *testing.T, id string) task {
 	if status != http.StatusOK {
 		t.Fatalf("get %s: HTTP %d: %s", id, status, body)
 	}
+
 	return decodeTask(t, headers, body)
 }
 
@@ -275,19 +303,23 @@ func decodeTask(t *testing.T, headers http.Header, body []byte) task {
 	if headers.Get("Content-Type") != "application/json" {
 		t.Fatalf("task response Content-Type = %q", headers.Get("Content-Type"))
 	}
+
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(body, &fields); err != nil {
 		t.Fatalf("decode task fields: %v", err)
 	}
+
 	for key := range fields {
 		if strings.Contains(strings.ToLower(key), "lease") {
 			t.Errorf("internal lease field exposed: %s", key)
 		}
 	}
+
 	var result task
 	if err := json.Unmarshal(body, &result); err != nil {
 		t.Fatalf("decode task: %v", err)
 	}
+
 	return result
 }
 
@@ -349,6 +381,7 @@ func newExecutor(t *testing.T, respond func(http.ResponseWriter, *http.Request))
 		default:
 			t.Error("executor delivery buffer overflow")
 		}
+
 		if respond != nil {
 			respond(w, r)
 		} else {
@@ -401,6 +434,7 @@ func assertDelivery(t *testing.T, d delivery, created task, attempt int, uri str
 	if d.ReadErr != nil || d.Method != http.MethodPost || d.URI != uri {
 		t.Errorf("delivery: method=%q uri=%q readError=%v", d.Method, d.URI, d.ReadErr)
 	}
+
 	for header, want := range map[string]string{
 		"Content-Type": "application/json", "X-Task-Id": created.ID, "X-Task-Attempt": strconv.Itoa(attempt),
 	} {
@@ -420,8 +454,10 @@ func assertJSON(t *testing.T, actual []byte, expected string) {
 		if err := decoder.Decode(&value); err != nil {
 			t.Fatalf("invalid JSON %q: %v", abbreviate(string(data)), err)
 		}
+
 		return value
 	}
+
 	if !reflect.DeepEqual(decode(actual), decode([]byte(expected))) {
 		t.Errorf("JSON = %s, want %s", abbreviate(string(actual)), abbreviate(expected))
 	}
@@ -432,15 +468,19 @@ func assertTerminal(t *testing.T, result task, status string, attempts int) {
 	if result.Status != status || result.Attempt != attempts {
 		t.Errorf("terminal state = %s attempt %d, want %s attempt %d", result.Status, result.Attempt, status, attempts)
 	}
+
 	if result.CreatedAt.IsZero() || result.StartedAt == nil || result.FinishedAt == nil {
 		t.Fatalf("missing lifecycle timestamps: %+v", result)
 	}
+
 	if result.StartedAt.Before(result.CreatedAt) || result.FinishedAt.Before(*result.StartedAt) || result.UpdatedAt.Before(*result.FinishedAt) {
 		t.Errorf("timestamps out of order: %+v", result)
 	}
+
 	if status == "succeeded" && result.LastError != "" {
 		t.Errorf("successful task retained error: %s", result.LastError)
 	}
+
 	if status == "failed" && result.LastError == "" {
 		t.Error("failed task has no error")
 	}
@@ -450,5 +490,6 @@ func abbreviate(s string) string {
 	if len(s) > 2048 {
 		return s[:2048] + "..."
 	}
+
 	return s
 }
