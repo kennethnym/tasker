@@ -14,6 +14,9 @@ import (
 )
 
 type appConfig struct {
+	Auth         *credentialSource    `yaml:"auth"`
+	OutboundAuth []outboundCredential `yaml:"outbound_auth"`
+
 	HTTP     httpConfig     `yaml:"http"`
 	Database databaseConfig `yaml:"database"`
 	Queue    queueConfig    `yaml:"queue"`

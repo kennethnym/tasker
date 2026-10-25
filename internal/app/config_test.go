@@ -3,6 +3,7 @@ package app
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -72,7 +73,7 @@ func TestConfig(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if (tc.name == "defaults" || tc.name == "empty sections" || strings.Contains(tc.name, "null")) && config != defaultConfig {
+			if (tc.name == "defaults" || tc.name == "empty sections" || strings.Contains(tc.name, "null")) && !reflect.DeepEqual(config, defaultConfig) {
 				t.Fatalf("unexpected defaults: %+v", config)
 			}
 
@@ -97,7 +98,7 @@ func TestMissingConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if config != defaultConfig {
+	if !reflect.DeepEqual(config, defaultConfig) {
 		t.Fatalf("got %+v, want defaults", config)
 	}
 }
