@@ -61,7 +61,7 @@ func TestOutcomeLogsFollowPersistence(t *testing.T) {
 				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{}`)), Header: make(http.Header)}, nil
 			})
 
-			e.execute(context.Background(), Task{ID: "task-1", Attempt: tc.attempt, MaxAttempts: 3, URL: "https://user:password@example.com/work?token=secret", DispatchDeadline: "1s"})
+			e.execute(context.Background(), Task{ID: "task-1", Attempt: tc.attempt, MaxAttempts: 3, URL: "https://example.com/work?token=secret", DispatchDeadline: "1s"})
 
 			var record map[string]any
 			if err := json.Unmarshal(output.Bytes(), &record); err != nil {
@@ -207,5 +207,70 @@ func TestDeliveryLogErrorCategories(t *testing.T) {
 				t.Fatalf("got %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestAccessLogsWithAuthentication(t *testing.T) {
+	var output bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&output, nil)))
+	defer slog.SetDefault(old)
+
+	service, err := New(Config{
+		Storage:   logStorage{},
+		AccessLog: true,
+		Auth:      &BasicAuth{Username: "api-user", Password: "api-password"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, authorized := range []bool{false, true} {
+		output.Reset()
+		request := httptest.NewRequest("GET", "/tasks/task-1", nil)
+		if authorized {
+			request.SetBasicAuth("api-user", "api-password")
+		}
+
+		response := httptest.NewRecorder()
+		service.Handler().ServeHTTP(response, request)
+
+		wantStatus := http.StatusUnauthorized
+		if authorized {
+			// The storage stub returns an error, proving authentication passed.
+			wantStatus = http.StatusInternalServerError
+		}
+
+		if response.Code != wantStatus {
+			t.Fatalf("status = %d, want %d", response.Code, wantStatus)
+		}
+
+		for _, secret := range []string{"api-user", "api-password", request.Header.Get("Authorization")} {
+			if secret != "" && strings.Contains(output.String(), secret) {
+				t.Fatalf("credentials leaked: %s", output.String())
+			}
+		}
+
+		decoder := json.NewDecoder(&output)
+		found := false
+		for decoder.More() {
+			var record map[string]any
+			if err := decoder.Decode(&record); err != nil {
+				t.Fatal(err)
+			}
+
+			if record["component"] != "http.access" {
+				continue
+			}
+
+			found = true
+			if record["status"] != float64(wantStatus) || record["request_id"] != response.Header().Get("X-Request-Id") {
+				t.Fatalf("incorrect access record: %v", record)
+			}
+		}
+
+		if !found {
+			t.Fatal("missing access log")
+		}
 	}
 }

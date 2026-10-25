@@ -5,9 +5,7 @@ package tasker
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
-	"math"
 	"net/url"
 	"time"
 )
@@ -20,27 +18,9 @@ type Tasker struct {
 }
 
 func New(config Config) (*Tasker, error) {
-	config = DefaultConfig.Merge(config)
-
-	if config.Storage == nil {
-		return nil, fmt.Errorf("tasker: storage is required")
-	}
-
-	if config.DispatchDeadline <= 0 || config.MaxAttempts <= 0 {
-		return nil, fmt.Errorf("tasker: dispatch deadline and max attempts must be positive")
-	}
-
-	if config.MaxConcurrentDispatches <= 0 || config.MaxDispatchesPerSecond <= 0 ||
-		math.IsNaN(config.MaxDispatchesPerSecond) || math.IsInf(config.MaxDispatchesPerSecond, 0) {
-		return nil, fmt.Errorf("tasker: dispatch rate and concurrency must be positive and finite")
-	}
-
-	if config.MinBackoff <= 0 || config.MaxBackoff < config.MinBackoff {
-		return nil, fmt.Errorf("tasker: backoff bounds must be positive and max must be at least min")
-	}
-
-	if config.TaskRetention <= 0 {
-		return nil, fmt.Errorf("tasker: task retention must be positive")
+	config, err := validateAndNormalizeConfig(config)
+	if err != nil {
+		return nil, err
 	}
 
 	return &Tasker{
@@ -67,7 +47,11 @@ func (t *Tasker) Run(ctx context.Context) error {
 
 func (t *Tasker) CreateTask(ctx context.Context, config CreateTaskConfig) (Task, error) {
 	u, err := url.Parse(config.URL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+	if err != nil {
+		return Task{}, ErrInvalidTaskURL
+	}
+
+	if _, err := Origin(u); err != nil {
 		return Task{}, ErrInvalidTaskURL
 	}
 

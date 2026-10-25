@@ -28,6 +28,11 @@ func Run(configPath string) error {
 
 	configureLogging(config.Logging)
 
+	auth, err := resolveAuth(config, configPath, os.LookupEnv)
+	if err != nil {
+		return err
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -37,10 +42,10 @@ func Run(configPath string) error {
 		stop()
 	}()
 
-	return run(ctx, config)
+	return run(ctx, config, auth)
 }
 
-func run(ctx context.Context, config appConfig) (err error) {
+func run(ctx context.Context, config appConfig, auth tasker.Config) (err error) {
 	storage, err := sqlite.Open(ctx, config.Database.Path)
 	if err != nil {
 		return fmt.Errorf("open storage: %w", err)
@@ -51,8 +56,11 @@ func run(ctx context.Context, config appConfig) (err error) {
 	}()
 
 	service, err := tasker.New(tasker.Config{
-		Storage:                 storage,
-		AccessLog:               config.Logging.Access,
+		Storage:   storage,
+		AccessLog: config.Logging.Access,
+
+		Auth:                    auth.Auth,
+		OutboundAuth:            auth.OutboundAuth,
 		MaxDispatchesPerSecond:  config.Queue.MaxDispatchesPerSecond,
 		MaxConcurrentDispatches: config.Queue.MaxConcurrentDispatches,
 		DispatchDeadline:        config.Queue.DispatchDeadline,

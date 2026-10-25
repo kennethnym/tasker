@@ -12,7 +12,7 @@ Retries are bounded. Acceptance does not guarantee eventual successful execution
 
 `scheduleTime` is the earliest eligible dispatch time, not an exact execution guarantee. Capacity, rate limits, polling, and outages can delay delivery. There is no strict ordering guarantee.
 
-Tasker has no application-specific debounce, conversation scheduling, or job-handler logic. Authentication, live progress, cancellation, enqueue deduplication, and distributed rate limiting are deferred.
+Tasker has no application-specific debounce, conversation scheduling, or job-handler logic. Optional inbound and outbound Basic Auth is described in [Authentication](auth.md). Live progress, cancellation, enqueue deduplication, and distributed rate limiting are deferred.
 
 ## Package and lifecycle
 
@@ -255,7 +255,7 @@ Cleanup is owned by the service, with no database TTL extension required.
 
 ## Deferred features and remaining decisions
 
-Deferred features are authentication in both directions, live stage/progress reporting, executor cancellation, task rescheduling endpoints, enqueue deduplication, named queues, distributed rate limits, and per-task retention overrides.
+Deferred features are live stage/progress reporting, executor cancellation, task rescheduling endpoints, enqueue deduplication, named queues, distributed rate limits, and per-task retention overrides.
 
 Before implementing dispatch, settle request and response size limits, malformed success-body diagnostics, redirect handling, URL validation, exact backoff jitter and burst capacity, and rate-gate coordination with claims.
 

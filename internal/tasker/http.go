@@ -17,7 +17,7 @@ func (t *Tasker) Handler() http.Handler {
 	mux.HandleFunc("POST /tasks", t.handleCreateTask)
 	mux.HandleFunc("GET /tasks/{id}", t.handleFindTask)
 
-	return t.logRequests(mux)
+	return t.logRequests(basicAuthHandler(mux, t.config.Auth))
 }
 
 func (t *Tasker) handleCreateTask(w http.ResponseWriter, r *http.Request) {

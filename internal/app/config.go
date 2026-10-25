@@ -21,7 +21,11 @@ type loggingConfig struct {
 }
 
 type appConfig struct {
-	Logging  loggingConfig  `yaml:"logging"`
+	Logging loggingConfig `yaml:"logging"`
+
+	Auth         *credentialSource    `yaml:"auth"`
+	OutboundAuth []outboundCredential `yaml:"outbound_auth"`
+
 	HTTP     httpConfig     `yaml:"http"`
 	Database databaseConfig `yaml:"database"`
 	Queue    queueConfig    `yaml:"queue"`

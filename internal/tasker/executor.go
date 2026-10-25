@@ -21,6 +21,7 @@ const maxResultBytes = 1 << 20
 type executor struct {
 	logger        *slog.Logger
 	storage       Storage
+	outboundAuth  map[string]BasicAuth
 	client        *http.Client
 	leaseDuration time.Duration
 	minBackoff    time.Duration
@@ -29,8 +30,9 @@ type executor struct {
 
 func newExecutor(config Config, leaseDuration time.Duration) *executor {
 	return &executor{
-		logger:  slog.With("component", "executor"),
-		storage: config.Storage,
+		logger:       slog.With("component", "executor"),
+		storage:      config.Storage,
+		outboundAuth: config.OutboundAuth,
 		client: &http.Client{
 			// Redirects are delivery failures; never change the method or target.
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -158,6 +160,16 @@ func (e *executor) deliver(ctx context.Context, task Task) (json.RawMessage, err
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, task.URL, bytes.NewReader(task.Input))
 	if err != nil {
 		return nil, fmt.Errorf("create executor request: %w", err)
+	}
+
+	// Reject URL userinfo, including on tasks persisted before auth was configured.
+	origin, err := Origin(req.URL)
+	if err != nil {
+		return nil, ErrInvalidTaskURL
+	}
+
+	if auth, ok := e.outboundAuth[origin]; ok {
+		req.SetBasicAuth(auth.Username, auth.Password)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
