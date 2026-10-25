@@ -178,7 +178,7 @@ Retrieves the current [Task](#task), including its status, delivery attempt coun
 
 Poll this endpoint until `status` is `succeeded` or `failed`. A failed delivery can return to `queued` while waiting for another attempt.
 
-### Worker delivery
+## Worker delivery
 
 Tasker sends an HTTP `POST` to the task's `url`, with `input` as the request body and these headers:
 
