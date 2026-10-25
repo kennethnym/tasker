@@ -56,8 +56,9 @@ func run(ctx context.Context, config appConfig, auth tasker.Config) (err error) 
 	}()
 
 	service, err := tasker.New(tasker.Config{
-		Storage:   storage,
-		AccessLog: config.Logging.Access,
+		Storage:        storage,
+		AccessLog:      config.Logging.Access,
+		MetricsEnabled: config.Metrics.Enabled,
 
 		Auth:                    auth.Auth,
 		OutboundAuth:            auth.OutboundAuth,

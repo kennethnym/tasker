@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,7 +18,11 @@ func (t *Tasker) Handler() http.Handler {
 	mux.HandleFunc("POST /tasks", t.handleCreateTask)
 	mux.HandleFunc("GET /tasks/{id}", t.handleFindTask)
 
-	return t.logRequests(basicAuthHandler(mux, t.config.Auth))
+	if t.metrics != nil {
+		mux.Handle("GET /metrics", t.metrics.handler)
+	}
+
+	return t.observeRequests(basicAuthHandler(mux, t.config.Auth), mux)
 }
 
 func (t *Tasker) handleCreateTask(w http.ResponseWriter, r *http.Request) {
@@ -132,7 +137,7 @@ func (w *accessResponse) Write(b []byte) (int, error) {
 	return n, err
 }
 
-func (t *Tasker) logRequests(next http.Handler) http.Handler {
+func (t *Tasker) observeRequests(next http.Handler, mux *http.ServeMux) http.Handler {
 	logger := slog.With("component", "http")
 	accessLogger := slog.With("component", "http.access")
 
@@ -143,7 +148,8 @@ func (t *Tasker) logRequests(next http.Handler) http.Handler {
 
 		r = r.WithContext(context.WithValue(r.Context(), requestLoggerKey{}, logger.With("request_id", requestID)))
 
-		if !t.config.AccessLog {
+		measure := t.metrics != nil && r.URL.Path != "/metrics"
+		if !t.config.AccessLog && !measure {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -160,13 +166,26 @@ func (t *Tasker) logRequests(next http.Handler) http.Handler {
 				status = http.StatusInternalServerError
 			}
 
-			level := slog.LevelInfo
-			if status >= 500 {
-				level = slog.LevelError
+			duration := time.Since(started)
+			if measure {
+				// Resolve before-auth rejections too, without labeling by raw paths.
+				_, pattern := mux.Handler(r)
+				method := metricMethod(r.Method)
+				route := metricRoute(pattern)
+				t.metrics.httpRequests.WithLabelValues(method, route, strconv.Itoa(status)).Inc()
+				t.metrics.httpDuration.WithLabelValues(method, route).Observe(duration.Seconds())
 			}
 
-			// Use the route pattern, never raw URLs, query strings, headers or bodies.
-			accessLogger.Log(r.Context(), level, "handled request", "request_id", requestID, "method", r.Method, "route", r.Pattern, "status", status, "size", response.size, "duration", time.Since(started))
+			if t.config.AccessLog {
+				level := slog.LevelInfo
+				if status >= 500 {
+					level = slog.LevelError
+				}
+
+				// Use the route pattern, never raw URLs, query strings, headers or bodies.
+				accessLogger.Log(r.Context(), level, "handled request", "request_id", requestID, "method", r.Method, "route", r.Pattern, "status", status, "size", response.size, "duration", duration)
+			}
+
 			if recovered != nil {
 				panic(recovered)
 			}
@@ -174,4 +193,27 @@ func (t *Tasker) logRequests(next http.Handler) http.Handler {
 
 		next.ServeHTTP(response, r)
 	})
+}
+
+func metricMethod(method string) string {
+	switch method {
+	case "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE":
+		return method
+
+	default:
+		return "other"
+	}
+}
+
+func metricRoute(pattern string) string {
+	switch pattern {
+	case "POST /tasks":
+		return "/tasks"
+
+	case "GET /tasks/{id}":
+		return "/tasks/{id}"
+
+	default:
+		return "unmatched"
+	}
 }

@@ -1,0 +1,19 @@
+global:
+  scrape_interval: 15s
+  scrape_timeout: 5s
+  evaluation_interval: 15s
+
+rule_files:
+  - alerts.yml
+
+scrape_configs:
+  - job_name: tasker
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["tasker:8080"]
+    # Uses the same credentials as the task API when auth is configured.
+    # basic_auth:
+    #   username: tasker-client
+    #   password_file: /run/secrets/tasker_api_password
+    # For a TLS-terminating proxy, use its address above and enable HTTPS:
+    # scheme: https

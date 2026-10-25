@@ -63,7 +63,7 @@ func TestInterruptedDeliveryRecovery(t *testing.T) {
 			})
 			database := filepath.Join(t.TempDir(), "tasks.db")
 			config := map[string]string{"dispatch_deadline": "2m", "max_attempts": strconv.Itoa(tc.attempts)}
-			p := startTasker(t, database, config)
+			p := startTasker(t, database, config, enableMetrics)
 			created := p.create(t, e.server.URL, `{"work":"recover"}`, nil)
 			first := e.next(t, waitTimeout)
 			assertDelivery(t, first, created, 1, "/")
@@ -77,7 +77,7 @@ func TestInterruptedDeliveryRecovery(t *testing.T) {
 			case <-time.After(waitTimeout):
 				t.Fatal("executor connection was not canceled after process exit")
 			}
-			p = startTasker(t, database, config)
+			p = startTasker(t, database, config, enableMetrics)
 			abandoned := p.get(t, created.ID)
 			if abandoned.Status != "running" || abandoned.Attempt != 1 || abandoned.FinishedAt != nil {
 				t.Fatalf("interrupted claim should remain recoverable: %+v", abandoned)
@@ -107,6 +107,20 @@ func TestInterruptedDeliveryRecovery(t *testing.T) {
 			if !result.StartedAt.Equal(*running.StartedAt) {
 				t.Error("recovery changed startedAt")
 			}
+
+			eventually(t, waitTimeout, "recovery metrics", func() bool {
+				body := scrapeMetrics(t, p)
+				if tc.attempts == 1 {
+					return sample(t, body, `tasker_tasks_finished_total{outcome="failed"}`) == 1 &&
+						sample(t, body, "tasker_lease_recoveries_total") == 0 &&
+						sample(t, body, "tasker_delivery_duration_seconds_count") == 0
+				}
+
+				return sample(t, body, "tasker_lease_recoveries_total") == 1 &&
+					sample(t, body, `tasker_tasks_finished_total{outcome="succeeded"}`) == 1 &&
+					sample(t, body, "tasker_queue_delay_seconds_sum") < 10
+			})
+
 			e.quiet(t, 1200*time.Millisecond)
 		})
 	}
