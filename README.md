@@ -71,6 +71,47 @@ queue:
 
 Please refer to the [reference](#configuration-fields) for more details.
 
+## Authentication
+
+Takser supports optional HTTP Basic Auth on inbound and outbound.
+
+Add either or both sections to `tasker.yaml`:
+
+```yaml
+auth:
+  username: tasker-client
+  password_file: /run/secrets/tasker_api_password
+
+outbound_auth:
+  - origin: https://reports.example.com
+    username: tasker
+    password_env: REPORTS_PASSWORD
+
+  - origin: http://worker:3001
+    username: tasker
+    password_file: /run/secrets/worker_password
+```
+
+When dispatching to a task endpoint, Tasker finds a matching basic auth credentials based on the domain, and adds it to the request header if one is found. The receiver of the task can then validate the provided credentials.
+
+### Incoming API requests
+
+When `auth` is configured, callers must send its username and password using HTTP Basic Auth. Missing or invalid credentials receive `401 Unauthorized` with a `WWW-Authenticate` challenge. The configured account can create and read all tasks.
+
+### Outgoing worker requests
+
+Tasker selects outbound credentials by the task URL's exact origin: scheme, hostname, and effective port. For example, `https://reports.example.com` matches every path on that origin, including an explicit port `443`, but not HTTP or another port.
+
+**Unmatched origins receive no Authorization header.** Tasks need no auth field, and inbound credentials are not forwarded to workers. Redirects are not followed.
+
+### Password sources
+
+Each credential entry requires a username and exactly one of `password_env` or `password_file`. Supply the referenced variable or mount the secret file inside the Tasker container. Missing, unreadable, or empty secrets fail startup.
+
+Relative secret paths resolve against the configuration file's directory. Credentials load at startup; restart Tasker after rotation. Passwords are not stored in task records.
+
+Use HTTPS outside a trusted private network. Tasker's inbound HTTPS can terminate at a reverse proxy. See the [authentication details](docs/auth.md) for hostname normalization and validation rules.
+
 ## Using Tasker
 
 A task can be dispatched via `POST /tasks`. Here is an example task payload:
@@ -197,6 +238,7 @@ Send a JSON object with `Content-Type: application/json`. The request body is li
 | Code | Body | Description |
 | ---- | ---- | ----------- |
 | `201 Created` | [Task](#task) | Task stored. The `Location` header contains `/tasks/{id}`. |
+| `401 Unauthorized` | `unauthorized` | Inbound auth is enabled and credentials are missing or invalid. |
 | `400 Bad Request` | Error message | Invalid JSON, unknown fields, missing required fields, or invalid field values. |
 | `413 Request Entity Too Large` | `request body exceeds 1 MiB` | Request body exceeds the size limit. |
 | `500 Internal Server Error` | `failed to create task` | Task could not be stored. |
@@ -214,6 +256,7 @@ Retrieves the current [Task](#task), including its status, delivery attempt coun
 | Code | Body | Description |
 | ---- | ---- | ----------- |
 | `200 OK` | [Task](#task) | Current task state. |
+| `401 Unauthorized` | `unauthorized` | Inbound auth is enabled and credentials are missing or invalid. |
 | `404 Not Found` | `task not found` | No task exists with this ID, or it has been removed by retention cleanup. |
 | `500 Internal Server Error` | `failed to find task` | Task could not be read. |
 

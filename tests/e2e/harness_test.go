@@ -110,7 +110,7 @@ func (o *processOutput) String() string {
 	return o.buf.String()
 }
 
-func startTasker(t *testing.T, database string, overrides map[string]string) *process {
+func startTasker(t *testing.T, database string, overrides map[string]string, sections ...map[string]any) *process {
 	t.Helper()
 	if database == "" {
 		database = filepath.Join(t.TempDir(), "tasks.db")
@@ -146,6 +146,12 @@ func startTasker(t *testing.T, database string, overrides map[string]string) *pr
 			target[key] = number
 		default:
 			target[key] = value
+		}
+	}
+
+	for _, section := range sections {
+		for key, value := range section {
+			fileSettings[key] = value
 		}
 	}
 
@@ -194,7 +200,7 @@ func startTasker(t *testing.T, database string, overrides map[string]string) *pr
 		}
 		defer response.Body.Close()
 		_, _ = io.Copy(io.Discard, response.Body)
-		return response.StatusCode == http.StatusNotFound
+		return response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusUnauthorized
 	})
 	return p
 }
