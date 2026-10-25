@@ -109,6 +109,20 @@ A successful enqueue gives `201` and the following response:
 }
 ```
 
+## Worker delivery
+
+Tasker sends an HTTP `POST` to the task's `url`, with `input` as the request body and these headers:
+
+| Header | Value |
+| --- | --- |
+| `Content-Type` | `application/json` |
+| `X-Task-Id` | Task ID. |
+| `X-Task-Attempt` | Current attempt number, starting at `1`. |
+
+Any `2xx` response marks the task as succeeded. A valid JSON response body of at most 1 MiB is stored in `result`. Empty, invalid JSON, or oversized response bodies leave `result` as `null` without failing the task.
+
+Non-`2xx` responses, network errors, and timeouts cause retries with backoff until `maxAttempts` is reached. Redirects are not followed. Tasks can be delivered more than once; workers should use `X-Task-Id` to avoid repeating side effects.
+
 ## Reference
 
 Successful responses use `Content-Type: application/json`. Error responses contain plain text, not JSON.
@@ -177,17 +191,3 @@ Retrieves the current [Task](#task), including its status, delivery attempt coun
 | `500 Internal Server Error` | `failed to find task` | Task could not be read. |
 
 Poll this endpoint until `status` is `succeeded` or `failed`. A failed delivery can return to `queued` while waiting for another attempt.
-
-## Worker delivery
-
-Tasker sends an HTTP `POST` to the task's `url`, with `input` as the request body and these headers:
-
-| Header | Value |
-| --- | --- |
-| `Content-Type` | `application/json` |
-| `X-Task-Id` | Task ID. |
-| `X-Task-Attempt` | Current attempt number, starting at `1`. |
-
-Any `2xx` response marks the task as succeeded. A valid JSON response body of at most 1 MiB is stored in `result`. Empty, invalid JSON, or oversized response bodies leave `result` as `null` without failing the task.
-
-Non-`2xx` responses, network errors, and timeouts cause retries with backoff until `maxAttempts` is reached. Redirects are not followed. Tasks can be delivered more than once; workers should use `X-Task-Id` to avoid repeating side effects.
