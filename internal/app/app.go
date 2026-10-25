@@ -1,22 +1,33 @@
 package app
 
 import (
-	"time"
+	"errors"
+	"flag"
+	"os"
 
 	"tasker/internal/tasker"
 )
 
 func Run() error {
-	service, err := tasker.New(tasker.Config{
-		Storage:                 nil,
-		MaxDispatchesPerSecond:  10,
-		MaxConcurrentDispatches: 20,
-		DispatchDeadline:        5 * time.Minute,
-		MaxAttempts:             5,
-		MinBackoff:              time.Second,
-		MaxBackoff:              time.Minute,
-		TaskRetention:           7 * 24 * time.Hour,
-	})
+	argsConfig, err := loadConfigFromArgs(os.Args[1:], os.Stderr)
+	if errors.Is(err, flag.ErrHelp) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	envConfig, err := loadConfigFromEnv(os.LookupEnv)
+	if err != nil {
+		return err
+	}
+
+	config := tasker.DefaultConfig.Merge(argsConfig).Merge(envConfig)
+	if err := validateConfig(config); err != nil {
+		return err
+	}
+
+	service, err := tasker.New(config)
 	if err != nil {
 		return err
 	}

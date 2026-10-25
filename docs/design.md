@@ -237,11 +237,13 @@ TaskRetention:          7 * 24 * time.Hour
 
 `New(config)` applies `DefaultConfig.Merge(config)`. Merge returns a copy, using non-zero fields and a non-nil storage adapter from the supplied config. Neither input is mutated. Explicit zero overrides cannot be represented by this API; zero currently means use the inherited value.
 
-The planned binary accepts `tasker --config /path/config.yaml`, with environment overrides prefixed by `TASKER_`. Precedence is environment, then file, then defaults. The SQLite file path belongs in application configuration; no external database credentials are needed.
+The binary loads configuration from CLI flags and environment variables. Precedence is environment, then flags, then defaults. Each setting uses a kebab-case flag and an uppercase `TASKER_` environment variable: `--max-dispatches-per-second`, `--max-concurrent-dispatches`, `--dispatch-deadline`, `--max-attempts`, `--min-backoff`, `--max-backoff`, and `--task-retention`. For example, `TASKER_MAX_ATTEMPTS=8 tasker --max-attempts=3` selects eight attempts. `tasker --help` lists all settings and their environment variable names.
+
+Durations use Go duration syntax, such as `30s`, `5m`, or `168h`. Present but empty environment variables are invalid. Args and environment variables are parsed independently into partial configs, then merged over defaults with environment values last. Malformed or nonpositive values in either source are rejected. Backoff bounds are checked after merging. Unknown flags and positional arguments are rejected. Configuration files are not supported. The SQLite file path belongs in application configuration; storage construction remains unimplemented.
 
 Configuration loading and duration parsing belong outside the service. The Go config struct has no YAML tags. Loading must explicitly map the flat external names to its fields.
 
-Startup validation and `tasker config validate --config ...` are planned. Invalid configuration should fail clearly. Configuration changes take effect through restart or redeployment; no hot reload or mutable configuration API is planned. IaC can mount a generated file and inject secrets without a custom provider.
+The loader validates positive settings, finite dispatch rates, and ordered backoff bounds before service construction. Explicit zero values are rejected rather than silently replaced by service defaults. Configuration changes take effect through restart or redeployment; no hot reload or mutable configuration API is planned. IaC can supply flags and environment variables.
 
 There are no named queues in the initial service. Polling, lease renewal, and cleanup timing stay internal to keep the public config minimal.
 
@@ -273,4 +275,4 @@ Non-2xx responses (including redirects), transport failures, response read failu
 
 `Run` also coordinates the cleanup reconciler, which deletes terminal tasks in bounded batches and retries storage failures on the next sweep. The constructor validates positive retention and valid backoff bounds.
 
-The SQLite storage adapter implements persistence, lease fencing, and expired exhausted-lease finalization. Config loading and application HTTP serving remain unimplemented. The executable still supplies no storage and therefore fails constructor validation. No automated tests are present.
+The SQLite storage adapter implements persistence, lease fencing, and expired exhausted-lease finalization. Config loading is implemented for defaults, flags, and environment overrides. Application HTTP serving remains unimplemented. The executable still supplies no storage and therefore fails constructor validation.
