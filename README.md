@@ -9,7 +9,7 @@ It is written in Go, and it is backed by SQLite.
 > [!NOTE]
 > Tasker is available as a [Docker image](https://hub.docker.com/r/kennethnym/tasker).
 
-By default, Tasker listens on port 8080. In order to persist data, provide a volumn mapping to `/data`.
+By default, Tasker listens on port 8080. In order to persist data, provide a volume mapping to `/data`.
 Tasker will automatically create and migrate an SQLite database if one does not exist.
 
 To run it via Docker:
@@ -22,53 +22,54 @@ docker run -d \
   kennethnym/tasker
 ```
 
-Optional configuration can be done via program arguments:
+To customize settings, create `tasker.yaml` and mount it into the container:
 
 ```bash
 docker run -d \
   --name tasker \
   -p 8080:8080 \
   -v ./tasker-data:/data \
-  kennethnym/tasker --max-attempts 3 --max-concurrent-dispatches 10
+  -v ./tasker.yaml:/data/tasker.yaml:ro \
+  kennethnym/tasker
 ```
 
-Below is an example Docker Compose definition for Tasker:
+Or use Docker Compose:
 
 ```yaml
 services:
   tasker:
     image: kennethnym/tasker
-    command:
-      - --max-attempts=3
-      - --max-concurrent-dispatches=10
     ports:
       - "8080:8080"
     volumes:
       - ./tasker-data:/data
+      - ./tasker.yaml:/data/tasker.yaml:ro
     restart: unless-stopped
 ```
 
 ## Configuration
 
-Tasker accepts command-line arguments and environment variables. Environment variables override flags.
+Tasker reads a YAML file: `tasker.yaml` in the working directory, or the path supplied with `--config` (`tasker --config /etc/tasker.yaml`). The Docker image, by default, looks for `/data/tasker.yaml`, which you can mount to customize settings. If the selected file does not exist, Tasker falls back to defaults.
 
-| Flag | Environment variable | Default | Description |
-| --- | --- | --- | --- |
-| `--listen-address` | `TASKER_LISTEN_ADDRESS` | `:8080` | HTTP listen address. |
-| `--database-path` | `TASKER_DATABASE_PATH` | `tasker.db` | SQLite database path, relative to the working directory. In Docker, this defaults to `/data/tasker.db`. |
-| `--shutdown-timeout` | `TASKER_SHUTDOWN_TIMEOUT` | `10s` | Grace period for HTTP requests during shutdown. |
-| `--max-dispatches-per-second` | `TASKER_MAX_DISPATCHES_PER_SECOND` | `10` | At most how many task dispatches can be made per second. Fractional values are accepted. |
-| `--max-concurrent-dispatches` | `TASKER_MAX_CONCURRENT_DISPATCHES` | `20` | Maximum number of concurrent task deliveries. |
-| `--dispatch-deadline` | `TASKER_DISPATCH_DEADLINE` | `5m` | Timeout for each delivery attempt. Tasks can override this with `dispatchDeadline` request field. |
-| `--max-attempts` | `TASKER_MAX_ATTEMPTS` | `5` | Maximum delivery attempts per task, including the initial attempt. |
-| `--min-backoff` | `TASKER_MIN_BACKOFF` | `1s` | Minimum delay before retrying a failed delivery. |
-| `--max-backoff` | `TASKER_MAX_BACKOFF` | `1m` | Upper limit for retry backoff. |
-| `--task-retention` | `TASKER_TASK_RETENTION` | `168h` | How long completed or failed tasks are retained before cleanup. |
+Omitted fields use the defaults shown below:
 
-Note:
-- Durations use Go duration syntax, such as `30s`, `5m`, or `1h30m`. Use `168h` for seven days; `7d` is not supported.
-- Numeric values and durations must be positive.
-- String values must not be empty.
+```yaml
+http:
+  listen_address: ":8080"
+  shutdown_timeout: 10s
+database:
+  path: tasker.db
+queue:
+  max_dispatches_per_second: 10
+  max_concurrent_dispatches: 20
+  dispatch_deadline: 5m
+  max_attempts: 5
+  min_backoff: 1s
+  max_backoff: 1m
+  task_retention: 168h
+```
+
+Please refer to the [reference](#configuration-fields) for more details.
 
 ## Using Tasker
 
@@ -132,6 +133,26 @@ Tasker guarantees at-least-once delivery, but deliveries of the same task can ha
 ## Reference
 
 Successful responses use `Content-Type: application/json`. Error responses contain plain text, not JSON.
+
+### Configuration fields
+
+| Field | Type | Default | Description and constraints |
+| --- | --- | --- | --- |
+| `http.listen_address` | string | `:8080` | HTTP server listen address in `host:port` form. An empty host listens on all interfaces. Must not be empty or whitespace-only. |
+| `http.shutdown_timeout` | duration string | `10s` | Grace period for in-flight HTTP requests during shutdown. Must be positive. |
+| `database.path` | string | `tasker.db` | SQLite database filename. Relative paths resolve against the working directory (`/data` in Docker), not the config file's directory. The parent directory must exist; the database is created and migrated automatically. Must not be empty or whitespace-only. |
+| `queue.max_dispatches_per_second` | number | `10` | Maximum rate of task dispatches. Fractional values are accepted. Must be positive and finite. |
+| `queue.max_concurrent_dispatches` | integer | `20` | Maximum number of simultaneous task deliveries. Must be positive. |
+| `queue.dispatch_deadline` | duration string | `5m` | Default timeout for each delivery attempt. A task can override this with the `dispatchDeadline` request field. Must be positive. |
+| `queue.max_attempts` | integer | `5` | Maximum delivery attempts per task, including the initial attempt. Must be positive. |
+| `queue.min_backoff` | duration string | `1s` | Minimum retry backoff after a failed delivery. Must be positive. |
+| `queue.max_backoff` | duration string | `1m` | Upper bound for retry backoff. Must be positive and at least `queue.min_backoff`. |
+| `queue.task_retention` | duration string | `168h` | How long succeeded and failed tasks are retained after finishing before becoming eligible for cleanup. Must be positive. |
+
+Notes:
+- All fields are optional.
+- Omitted or `null` values retain their defaults.
+- Durations are strings using Go duration syntax, such as `30s`, `5m`, or `1h30m`; use `168h` for seven days.
 
 ### Task
 

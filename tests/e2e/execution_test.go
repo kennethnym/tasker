@@ -122,7 +122,7 @@ func TestRetryThenSuccess(t *testing.T) {
 		case <-r.Context().Done():
 		}
 	})
-	p := startTasker(t, "", map[string]string{"min-backoff": "500ms", "max-backoff": "750ms", "max-attempts": "4"})
+	p := startTasker(t, "", map[string]string{"min_backoff": "500ms", "max_backoff": "750ms", "max_attempts": "4"})
 	created := p.create(t, e.server.URL, `{"work":"retry"}`, nil)
 	var firstStarted time.Time
 	nextEligible := created.ScheduleTime
@@ -212,7 +212,7 @@ func TestDeliveryFailures(t *testing.T) {
 					}
 				}
 			})
-			p := startTasker(t, "", map[string]string{"max-attempts": strconv.Itoa(tc.attempts)})
+			p := startTasker(t, "", map[string]string{"max_attempts": strconv.Itoa(tc.attempts)})
 			fields := map[string]any{}
 			if tc.name == "deadline" {
 				fields["dispatchDeadline"] = "250ms"
@@ -255,7 +255,7 @@ func TestRedirectsAreNotFollowed(t *testing.T) {
 				w.Header().Set("Location", destination.server.URL+"/redirected")
 				w.WriteHeader(code)
 			})
-			p := startTasker(t, "", map[string]string{"max-attempts": "2"})
+			p := startTasker(t, "", map[string]string{"max_attempts": "2"})
 			created := p.create(t, e.server.URL, `{}`, nil)
 			for attempt := 1; attempt <= 2; attempt++ {
 				assertDelivery(t, e.next(t, waitTimeout), created, attempt, "/")

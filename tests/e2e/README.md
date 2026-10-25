@@ -58,8 +58,8 @@ for the same pull request or branch.
 ## Harness behavior
 
 The process binds `127.0.0.1:0`; the harness reads its actual address from the
-startup log and waits for an HTTP response. Inherited `TASKER_*` environment
-variables are removed, and settings are passed explicitly as CLI flags.
+startup log and waits for an HTTP response. Settings are written to a temporary
+YAML config file whose path is passed to the executable with `--config`.
 
 Executor handlers record requests in a channel and can block, fail, or return
 specific responses. Assertions compare those requests with the submitted input

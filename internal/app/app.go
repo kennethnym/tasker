@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"log/slog"
 	"net"
@@ -17,22 +16,12 @@ import (
 	"tasker/internal/tasker"
 )
 
-func Run() error {
-	argsConfig, err := loadConfigFromArgs(os.Args[1:], os.Stderr)
-	if errors.Is(err, flag.ErrHelp) {
-		return nil
-	}
-
+func Run(configPath string) error {
+	config, err := loadConfig(configPath)
 	if err != nil {
 		return err
 	}
 
-	envConfig, err := loadConfigFromEnv(os.LookupEnv)
-	if err != nil {
-		return err
-	}
-
-	config := defaultConfig.Merge(argsConfig).Merge(envConfig)
 	if err := validateConfig(config); err != nil {
 		return err
 	}
@@ -50,7 +39,7 @@ func Run() error {
 }
 
 func run(ctx context.Context, config appConfig) (err error) {
-	storage, err := sqlite.Open(ctx, config.DatabasePath)
+	storage, err := sqlite.Open(ctx, config.Database.Path)
 	if err != nil {
 		return fmt.Errorf("open storage: %w", err)
 	}
@@ -59,21 +48,28 @@ func run(ctx context.Context, config appConfig) (err error) {
 		err = errors.Join(err, storage.Close())
 	}()
 
-	config.Storage = storage
-
-	service, err := tasker.New(config.Config)
+	service, err := tasker.New(tasker.Config{
+		Storage:                 storage,
+		MaxDispatchesPerSecond:  config.Queue.MaxDispatchesPerSecond,
+		MaxConcurrentDispatches: config.Queue.MaxConcurrentDispatches,
+		DispatchDeadline:        config.Queue.DispatchDeadline,
+		MaxAttempts:             config.Queue.MaxAttempts,
+		MinBackoff:              config.Queue.MinBackoff,
+		MaxBackoff:              config.Queue.MaxBackoff,
+		TaskRetention:           config.Queue.TaskRetention,
+	})
 	if err != nil {
 		return err
 	}
 
-	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", config.ListenAddress)
+	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", config.HTTP.ListenAddress)
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
 
 	slog.Info("tasker listening", "address", listener.Addr().String())
 
-	return serve(ctx, listener, service, config.ShutdownTimeout)
+	return serve(ctx, listener, service, config.HTTP.ShutdownTimeout)
 }
 
 // serve owns the listener and waits for background work before returning.

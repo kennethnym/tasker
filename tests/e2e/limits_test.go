@@ -27,7 +27,7 @@ func TestConcurrencyLimit(t *testing.T) {
 		case <-r.Context().Done():
 		}
 	})
-	p := startTasker(t, "", map[string]string{"max-concurrent-dispatches": "2", "dispatch-deadline": "30s"})
+	p := startTasker(t, "", map[string]string{"max_concurrent_dispatches": "2", "dispatch_deadline": "30s"})
 	tasks := make(map[string]task)
 	for range count {
 		created := p.create(t, e.server.URL, `{}`, nil)
@@ -75,7 +75,7 @@ func TestRateLimitIncludesRetries(t *testing.T) {
 		}
 		_, _ = io.WriteString(w, `{"ok":true}`)
 	})
-	p := startTasker(t, "", map[string]string{"max-dispatches-per-second": "2", "max-attempts": "2"})
+	p := startTasker(t, "", map[string]string{"max_dispatches_per_second": "2", "max_attempts": "2"})
 	tasks := make(map[string]task)
 	// Make a backlog before any task is eligible, then let polling discover it.
 	due := time.Now().Add(2 * time.Second)
